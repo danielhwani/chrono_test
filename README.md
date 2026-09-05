@@ -1,0 +1,73 @@
+# Chrono Simple Vehicle
+
+PyChrono(Project Chrono core API, `chrono.vehicle` 모듈 없이 `ChBody`/`ChLink` 프리미티브만으로 직접 조립한) 기반의 간단한 차량 multibody dynamics 데모.
+
+## 환경
+
+- conda env `chrono` (Python 3.12), `projectchrono` 채널의 PyChrono 10.0.0 (core + irrlicht) 설치됨
+- `pynput` 설치됨 (`drive_vehicle.py`의 전역 키보드 입력용)
+
+```bash
+conda activate chrono
+cd /home/daniel/chrono_test
+```
+
+## 파일
+
+| 파일 | 설명 |
+|---|---|
+| `simple_vehicle.py` | 차량/지면 조립(`make_vehicle`)과 자동(스텝 조향) 주행 데모. CSV 로그 생성. |
+| `drive_vehicle.py` | 같은 차량을 화살표/WASD 키로 직접 조종하는 버전. |
+| `slip_demo.py` | 한쪽 바퀴 저마찰 슬립 → 디퍼렌셜 개입 과정을 보여주는 6륜 전용 데모. |
+| `plot_results.py` | `vehicle_log.csv`를 읽어 궤적/속도/조향-요/서스펜션 그래프(`vehicle_results.png`) 생성. |
+
+## 모델 구조
+
+- 각 바퀴 코너: 섀시 — (수직 `ChLinkLockPrismatic` + `ChLinkTSDA` 스프링-댐퍼) — 업라이트
+- 조향축(전륜, 4륜/6륜 공통): 업라이트 — (`ChLinkMotorRotationAngle`, Z축 회전) — 너클 — (`ChLinkLockRevolute`, Y축 스핀) — 휠
+  - **좌우 바퀴에 동일한 각도**를 적용하는 평행 조향입니다. 실제 애커먼 기하(코너링 시 안쪽 바퀴가 더 많이 꺾이는 계산)는 반영되어 있지 않습니다.
+- 구동축: 위와 동일하지만 조향축 대신 `ChLinkMotorRotationTorque`로 토크 인가
+- 지면: 500m×500m 콘크리트 텍스처 박스, `ChCollisionSystem.Type_BULLET` 필요 (안 켜면 접촉 없이 그냥 뚫고 낙하함)
+- 6륜(`--six-wheel`): 전축(F, 조향)+중간축(M)+후축(R, 둘 다 구동)인 3축 트럭 레이아웃. `make_vehicle`이 축 개수에 무관하게 동작하도록 일반화되어 있어 4륜/6륜이 같은 코드 경로를 씀.
+- 좌우 디퍼렌셜: `apply_differential()` — 구동축별로 `ChLinkMotorRotationTorque.GetMotorAngleDt()`로 좌우 속도차를 읽어 헛도는 쪽 토크를 줄이고 반대쪽으로 몰아줌(진짜 기어 결합이 아니라 속도차 감지 기반 소프트웨어 재분배).
+- 바퀴에는 회전 확인용 노란 마커(반지름 밖으로 살짝 튀어나온 박스)가 붙어 있어, 빨리 도는지 눈으로 구분 가능.
+
+## 실행
+
+```bash
+# 자동 주행 데모 (헤드리스: CSV만 생성)
+python simple_vehicle.py
+
+# 3D 뷰로 보기
+python simple_vehicle.py --irrlicht
+
+# 조향 파라미터 조절 (목표각/시작시각/램프시간)
+python simple_vehicle.py --irrlicht --steer-deg 25 --steer-start 1.5 --steer-ramp 0.8
+
+# 6륜 트럭 레이아웃
+python simple_vehicle.py --irrlicht --six-wheel
+
+# 결과 그래프
+python plot_results.py
+
+# 키보드 조종 (↑↓←→ 또는 WASD, Space=정지, q/Esc=종료 — 어느 창에 포커스가 있든 동작)
+python drive_vehicle.py
+python drive_vehicle.py --six-wheel
+
+# 6륜 슬립 → 디퍼렌셜 개입 시각화
+python slip_demo.py
+python slip_demo.py --switch-time 4.0
+```
+
+## 알려진 이슈/한계
+
+- **평행 조향**: 좌우 앞바퀴가 항상 같은 각도로 꺾임 (애커먼 기하 미적용).
+- **디퍼렌셜은 소프트웨어 방식**: 실제 기어 커플링(캐리어 각속도 = 좌우 평균)을 강제하지 않고, 속도차를 감지해서 토크를 재분배하는 제어 로직임.
+- **회전 시 전복 가능**: 무게중심 높이(1.19m)가 트랙폭(1.5m) 대비 높은 편이라, 급선회 중 계속 가속하면 전복함 (물리적으로는 타당한 현상).
+- Irrlicht 창은 `DISPLAY` 환경변수가 유효한 X11 세션이 있어야 뜸. `drive_vehicle.py`는 `pynput`으로 X서버 레벨 전역 키 입력을 사용하므로 터미널 포커스와 무관하게 동작함.
+
+## 다음에 이어서 할 만한 것
+
+- 진짜 애커먼 조향 기하(휠베이스/트랙/조향각으로 좌우 각도 따로 계산)
+- Chrono::Vehicle의 정식 타이어 모델(TMEASY) 적용
+- 요철(bump) 지형 통과 테스트
