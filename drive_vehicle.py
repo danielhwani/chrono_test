@@ -106,6 +106,9 @@ def main():
     parser.add_argument("--ackermann", action="store_true",
                          help="split the steer command into separate L/R wheel angles via "
                               "Ackermann geometry, instead of applying it to both equally")
+    parser.add_argument("--tire-model", choices=["rigid", "empirical"], default="rigid",
+                         help="'rigid' (default): Bullet Coulomb-friction wheel/ground contact. "
+                              "'empirical': slip-based tire force law")
     args = parser.parse_args()
 
     chrono.SetChronoDataPath(
@@ -126,6 +129,9 @@ def main():
         chrono.ChVector3d(-9, -12, 5.0) if args.six_wheel else chrono.ChVector3d(-6, -8, 3.5)
     )
     ackermann_wheelbase = sv.WHEELBASE_6W if args.six_wheel else sv.WHEELBASE
+    tire_accumulators = (
+        sv.setup_empirical_tire_wheels(wheels) if args.tire_model == "empirical" else None
+    )
 
     vis = chronoirr.ChVisualSystemIrrlicht()
     vis.SetCameraVertical(chrono.CameraVerticalDir_Z)
@@ -140,6 +146,7 @@ def main():
 
     print(f"Steering mode: {'ACKERMANN' if args.ackermann else 'PARALLEL'}"
           f"{' (--ackermann)' if args.ackermann else ' (no --ackermann flag)'}")
+    print(f"Tire model: {args.tire_model}")
     print("Controls (work no matter which window is focused):")
     print("  Up/W = forward   Down/S = reverse   Left/A = steer left   Right/D = steer right")
     print("  Space = stop   q/Esc = quit")
@@ -178,6 +185,8 @@ def main():
             )
 
             sv.apply_differential(motors, throttle_functions, throttle_cmd)
+            if tire_accumulators is not None:
+                sv.apply_tire_forces(wheels, tire_accumulators)
             if args.ackermann:
                 left_deg, right_deg = sv.ackermann_wheel_angles_deg(
                     steer_cmd_deg, ackermann_wheelbase, sv.TRACK

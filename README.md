@@ -32,6 +32,9 @@ cd /home/daniel/chrono_test
 - 6륜(`--six-wheel`): 전축(F, 조향)+중간축(M)+후축(R, 둘 다 구동)인 3축 트럭 레이아웃. `make_vehicle`이 축 개수에 무관하게 동작하도록 일반화되어 있어 4륜/6륜이 같은 코드 경로를 씀.
 - 좌우 디퍼렌셜: `apply_differential()` — 구동축별로 `ChLinkMotorRotationTorque.GetMotorAngleDt()`로 좌우 속도차를 읽어 헛도는 쪽 토크를 줄이고 반대쪽으로 몰아줌(진짜 기어 결합이 아니라 속도차 감지 기반 소프트웨어 재분배).
 - 바퀴에는 회전 확인용 노란 마커(반지름 밖으로 살짝 튀어나온 박스)가 붙어 있어, 빨리 도는지 눈으로 구분 가능.
+- 타이어 모델(`--tire-model {rigid, empirical}`): 기본은 `rigid`(Bullet의 Coulomb 마찰 접촉, 지금까지 써온 방식). `empirical`은 바퀴-지면 마찰을 0으로 낮춰서 Bullet은 수직 반력만 담당하게 하고, 대신 `apply_tire_forces()`가 매 스텝 슬립비/슬립각을 직접 계산해서 선형-then-포화(friction circle) 힘 법칙으로 종/횡방향 힘을 얹어줍니다. 개념적으로 TMEASY와 비슷하지만 직접 만든 단순화 모델입니다.
+  - 진짜 `ChTMeasyTire`(Chrono::Vehicle 정식 클래스)는 `ChWheel.Initialize()`가 `ChChassis`(→ `ChVehicle`)를 요구해서, 지금처럼 `ChBody`/`ChLink`로 직접 조립한 차량에는 못 붙입니다 — Chrono::Vehicle 클래스 체계로 차량을 통째로 다시 지어야 합니다. 그래서 기존 구조를 유지하는 자체 슬립 기반 모델로 대신했습니다.
+  - Fz(수직하중)는 서스펜션 스프링 힘 대신 `wheel.GetContactForce()`(엔진이 실제로 계산한 접지력)를 씁니다 — 스프링 힘은 구동 반작용 토크 때문에 인장 방향으로 틀어지는 경우가 있어 하중 추정치로 부정확했습니다.
 
 ## 실행
 
@@ -51,6 +54,9 @@ python simple_vehicle.py --irrlicht --six-wheel
 # 애커먼 조향 기하 (좌우 바퀴 각도를 따로 계산; --six-wheel과도 조합 가능)
 python simple_vehicle.py --irrlicht --ackermann
 
+# 슬립 기반 타이어력 모델 (다른 옵션들과 자유롭게 조합 가능)
+python simple_vehicle.py --irrlicht --tire-model empirical
+
 # 결과 그래프
 python plot_results.py
 
@@ -58,6 +64,7 @@ python plot_results.py
 python drive_vehicle.py
 python drive_vehicle.py --six-wheel
 python drive_vehicle.py --ackermann
+python drive_vehicle.py --tire-model empirical
 
 # 6륜 슬립 → 디퍼렌셜 개입 시각화
 python slip_demo.py
@@ -73,5 +80,4 @@ python slip_demo.py --switch-time 4.0
 
 ## 다음에 이어서 할 만한 것
 
-- Chrono::Vehicle의 정식 타이어 모델(TMEASY) 적용
 - 요철(bump) 지형 통과 테스트

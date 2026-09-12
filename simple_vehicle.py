@@ -69,6 +69,15 @@ DRIVE_TORQUE = 260.0    # N*m applied to each rear wheel
 SIM_TIME = 6.0
 TIME_STEP = 2e-3
 
+# "empirical" tire model (--tire-model empirical): a simplified, hand-rolled
+# slip-based tire force law (conceptually similar to TMEASY -- linear near
+# zero slip, saturating at a friction-circle limit) applied as an external
+# force on each wheel, in place of Chrono's rigid Coulomb contact friction.
+TIRE_MU = 0.9                     # peak friction coefficient (peak Fx or Fy = mu * Fz)
+TIRE_CORNERING_STIFFNESS = 12.0   # N of lateral force per N of load per radian of slip angle
+TIRE_LONGITUDINAL_STIFFNESS = 15.0  # N of longitudinal force per N of load per unit slip ratio
+TIRE_SLIP_SPEED_EPS = 0.5         # m/s -- floor on the speed used to normalize slip ratio
+
 # simple open/limited-slip differential: senses the L/R wheel speed
 # difference on each driven axle and shifts torque toward the slower
 # (higher-traction) side.
@@ -287,6 +296,82 @@ def apply_differential(motors, throttle_functions, nominal_torque,
         throttle_functions[right_name].SetConstant(nominal_torque + bias)
 
 
+def setup_empirical_tire_wheels(wheels):
+    """Switch the given wheels from rigid Coulomb-friction ground contact to
+    the "empirical" slip-based tire model: zero out their contact friction
+    (so Bullet only supplies the vertical/normal reaction, no tangential
+    friction force) and give each wheel a force accumulator that
+    apply_tire_forces() will fill in every step instead. Returns a
+    {wheel_name: accumulator_index} dict to pass to apply_tire_forces().
+    Purely additive -- make_vehicle() and the default (rigid) path are
+    untouched; this only runs when --tire-model empirical is selected.
+    """
+    zero_mu_mat = chrono.ChContactMaterialNSC()
+    zero_mu_mat.SetFriction(0.0)
+    zero_mu_mat.SetRestitution(0.0)
+    accumulators = {}
+    for name, wheel in wheels.items():
+        wheel.GetCollisionModel().SetAllShapesMaterial(zero_mu_mat)
+        accumulators[name] = wheel.AddAccumulator()
+    return accumulators
+
+
+def apply_tire_forces(wheels, accumulators,
+                       mu=TIRE_MU,
+                       c_alpha=TIRE_CORNERING_STIFFNESS,
+                       c_kappa=TIRE_LONGITUDINAL_STIFFNESS,
+                       speed_eps=TIRE_SLIP_SPEED_EPS,
+                       wheel_radius=WHEEL_RADIUS):
+    """Compute and apply a simplified, hand-rolled slip-based tire force for
+    each wheel (must have been set up via setup_empirical_tire_wheels()).
+
+    For each wheel: derive its current rolling (heading) and spin-axis
+    (lateral) directions from its own orientation (so it works whether the
+    wheel is steered or not), compute the longitudinal slip ratio and
+    lateral slip angle from the wheel's linear/angular velocity, get the
+    actual normal load from the physics engine's own contact resolution
+    (ChBody.GetContactForce()), and apply a linear-then-saturating
+    (friction-circle) force law -- conceptually similar to TMEASY/Pacejka,
+    though far simpler and not a literal port of either.
+    """
+    up = chrono.ChVector3d(0, 0, 1)
+    for name, wheel in wheels.items():
+        idx = accumulators[name]
+        wheel.EmptyAccumulator(idx)
+
+        spin_axis = wheel.GetRot().Rotate(chrono.ChVector3d(0, 1, 0))
+        spin_axis = spin_axis - up * spin_axis.Dot(up)  # project out any camber/tilt
+        spin_len = spin_axis.Length()
+        if spin_len < 1e-6:
+            continue
+        spin_axis = spin_axis * (1.0 / spin_len)
+        heading = spin_axis.Cross(up)  # rolling direction, in the ground plane
+        heading = heading * (1.0 / heading.Length())
+
+        vel = wheel.GetPosDt()
+        v_forward = vel.Dot(heading)
+        v_lateral = vel.Dot(spin_axis)
+        omega_spin = wheel.GetAngVelParent().Dot(spin_axis)
+
+        kappa = (omega_spin * wheel_radius - v_forward) / max(abs(v_forward), speed_eps)
+        alpha = math.atan2(v_lateral, max(abs(v_forward), speed_eps) * (1 if v_forward >= 0 else -1))
+
+        fz = max(wheel.GetContactForce().z, 0.0)
+        fx_lin = c_kappa * fz * kappa
+        fy_lin = -c_alpha * fz * alpha
+
+        f_max = mu * fz
+        mag = math.hypot(fx_lin, fy_lin)
+        if mag > f_max and mag > 1e-9:
+            scale = f_max / mag
+            fx_lin *= scale
+            fy_lin *= scale
+
+        force = heading * fx_lin + spin_axis * fy_lin
+        contact_point = wheel.GetPos() - up * wheel_radius
+        wheel.AccumulateForce(idx, force, contact_point, False)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--irrlicht", action="store_true", help="open live 3D view")
@@ -302,6 +387,9 @@ def main():
     parser.add_argument("--ackermann", action="store_true",
                          help="split the commanded steer angle into separate L/R wheel angles "
                               "via Ackermann geometry, instead of applying it to both equally")
+    parser.add_argument("--tire-model", choices=["rigid", "empirical"], default="rigid",
+                         help="'rigid' (default): Bullet Coulomb-friction wheel/ground contact. "
+                              "'empirical': slip-based tire force law (see apply_tire_forces)")
     args = parser.parse_args()
 
     chrono.SetChronoDataPath(
@@ -319,6 +407,9 @@ def main():
     )
     susp_keys = sorted(springs.keys())
     ackermann_wheelbase = WHEELBASE_6W if args.six_wheel else WHEELBASE
+    tire_accumulators = (
+        setup_empirical_tire_wheels(wheels) if args.tire_model == "empirical" else None
+    )
 
     log_path = os.path.join(os.path.dirname(__file__), "vehicle_log.csv")
     log_file = open(log_path, "w", newline="")
@@ -380,6 +471,8 @@ def main():
                 steer_fn.SetConstant(cur_steer_rad)
 
         apply_differential(motors, throttle_functions, DRIVE_TORQUE)
+        if tire_accumulators is not None:
+            apply_tire_forces(wheels, tire_accumulators)
 
         sys.DoStepDynamics(TIME_STEP)
         t = sys.GetChTime()
