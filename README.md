@@ -134,4 +134,10 @@ python benchmark_realtime.py --pacing on --sim-time 5
 
 주의: `--render both`는 헤드리스/렌더링 두 측정을 **별도 프로세스로 격리**해서 돌림 — 한 프로세스에서 FMU/Irrlicht 세션을 연달아 두 번 만들면 정리(cleanup) 과정에서 `corrupted double-linked list`로 크래시하는 걸 확인해서 이렇게 고침(테스트 중 실제로 발생시켜 확인함).
 
+**한눈에 그래프로 보기** (`plot_realtime_benchmark.py`): 시간에 따라 (시뮬레이션 시간, 실제 경과 시간)을 계속 기록해서, 헤드리스/렌더링 두 곡선을 "완벽 동기화(y=x)" 기준선과 함께 그림. 오른쪽 패널은 `wall - sim` 편차 자체를 시간축으로 그려서 얼마나 벌어지는지 누적 추세를 바로 보여줌:
+```bash
+python plot_realtime_benchmark.py --sim-time 5
+```
+결과(`realtime_pacing.png`): 헤드리스는 처음부터 끝까지 편차 0에 딱 붙어있고, 렌더링 포함은 시작부터 약 0.11s 앞서 벌어진 채 이후 거의 선형으로 계속 커져서 5초 뒤엔 약 0.48~0.58s 차이로 끝남 — 초반의 계단형 점프(예: t≈1.1s 부근)는 아마 첫 바운스 등 이벤트성 비용과 관련된 것으로 보임(원인 미확정).
+
 트레이드오프: 이 분리는 ROS2/Simulink 등 외부 툴과 실제로 연동할 때 값어치가 있고, 계속 이 레포 안에서만 쓸 거면 지금 구조 대비 초기 비용이 큼.

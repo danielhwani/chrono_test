@@ -63,7 +63,7 @@ def make_fmu_instance(fmu_path):
     return fmu, value_refs
 
 
-def run_headless(fmu_path, sim_time, step_size, pacing=False):
+def run_headless(fmu_path, sim_time, step_size, pacing=False, trace_interval=0):
     fmu, vr = make_fmu_instance(fmu_path)
     has_h = "h" in vr
 
@@ -74,10 +74,11 @@ def run_headless(fmu_path, sim_time, step_size, pacing=False):
 
     n_steps = int(sim_time / step_size)
     step_wall_times = []
+    trace = []  # (sim_time, wall_time_elapsed_so_far)
 
     wall_start = time.perf_counter()
     t = 0.0
-    for _ in range(n_steps):
+    for i in range(n_steps):
         step_t0 = time.perf_counter()
         fmu.doStep(currentCommunicationPoint=t, communicationStepSize=step_size)
         step_wall_times.append(time.perf_counter() - step_t0)
@@ -86,14 +87,18 @@ def run_headless(fmu_path, sim_time, step_size, pacing=False):
             fmu.getReal([vr["h"]])  # touch an output, like a real caller would
         if realtime_timer is not None:
             realtime_timer.Spin(step_size)
+        if trace_interval and i % trace_interval == 0:
+            trace.append((t, time.perf_counter() - wall_start))
     wall_elapsed = time.perf_counter() - wall_start
+    if trace_interval:
+        trace.append((t, wall_elapsed))
 
     fmu.terminate()
     fmu.freeInstance()
-    return wall_elapsed, step_wall_times
+    return wall_elapsed, step_wall_times, trace
 
 
-def run_with_rendering(fmu_path, sim_time, step_size, pacing=False):
+def run_with_rendering(fmu_path, sim_time, step_size, pacing=False, trace_interval=0):
     import pychrono as chrono
     import pychrono.irrlicht as chronoirr
 
@@ -125,10 +130,11 @@ def run_with_rendering(fmu_path, sim_time, step_size, pacing=False):
     next_render_t = 0.0
     n_steps = int(sim_time / step_size)
     step_wall_times = []
+    trace = []  # (sim_time, wall_time_elapsed_so_far)
 
     wall_start = time.perf_counter()
     t = 0.0
-    for _ in range(n_steps):
+    for i in range(n_steps):
         if not vis.Run():
             break
         step_t0 = time.perf_counter()
@@ -146,11 +152,24 @@ def run_with_rendering(fmu_path, sim_time, step_size, pacing=False):
             next_render_t += RENDER_DT
         if realtime_timer is not None:
             realtime_timer.Spin(step_size)
+        if trace_interval and i % trace_interval == 0:
+            trace.append((t, time.perf_counter() - wall_start))
     wall_elapsed = time.perf_counter() - wall_start
+    if trace_interval:
+        trace.append((t, wall_elapsed))
 
     fmu.terminate()
     fmu.freeInstance()
-    return wall_elapsed, step_wall_times
+    return wall_elapsed, step_wall_times, trace
+
+
+def write_trace(path, trace):
+    import csv
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["sim_time", "wall_time"])
+        writer.writerows(trace)
+    print(f"  trace written to {path} ({len(trace)} samples)")
 
 
 def report(label, sim_time, wall_elapsed, step_wall_times, pacing=False):
@@ -182,6 +201,11 @@ def main():
                          help="off (default): run flat-out, report the real-time factor. "
                               "on: pace with ChRealtimeStepTimer.Spin() like render_*.py "
                               "actually does, and report how closely wall time tracks sim time.")
+    parser.add_argument("--trace-out", default=None,
+                         help="write a (sim_time,wall_time) CSV trace to this path, for plotting "
+                              "(see plot_realtime_benchmark.py)")
+    parser.add_argument("--trace-interval", type=int, default=10,
+                         help="record a trace sample every N steps (default 10)")
     parser.add_argument("--_mode", choices=["headless", "render"], help=argparse.SUPPRESS)
     args = parser.parse_args()
     pacing = args.pacing == "on"
@@ -189,23 +213,34 @@ def main():
     if not os.path.exists(args.fmu):
         raise SystemExit(f"{args.fmu} not found -- build it first with pythonfmu build")
 
+    trace_interval = args.trace_interval if args.trace_out else 0
+
     # single-mode: actually run the measurement (this is what the subprocess dispatch below invokes)
     if args._mode == "headless":
-        wall, steps = run_headless(args.fmu, args.sim_time, args.step_size, pacing=pacing)
+        wall, steps, trace = run_headless(args.fmu, args.sim_time, args.step_size,
+                                           pacing=pacing, trace_interval=trace_interval)
         report("headless (dynamics only, no Chrono/Irrlicht)", args.sim_time, wall, steps, pacing)
+        if args.trace_out:
+            write_trace(args.trace_out, trace)
         return
     if args._mode == "render":
-        wall, steps = run_with_rendering(args.fmu, args.sim_time, args.step_size, pacing=pacing)
+        wall, steps, trace = run_with_rendering(args.fmu, args.sim_time, args.step_size,
+                                                 pacing=pacing, trace_interval=trace_interval)
         report(f"with rendering ({'paced' if pacing else 'unpaced'})", args.sim_time, wall, steps, pacing)
+        if args.trace_out:
+            write_trace(args.trace_out, trace)
         return
 
     # top-level: dispatch each requested mode as its own subprocess
     common = ["--fmu", args.fmu, "--sim-time", str(args.sim_time),
-              "--step-size", str(args.step_size), "--pacing", args.pacing]
+              "--step-size", str(args.step_size), "--pacing", args.pacing,
+              "--trace-interval", str(args.trace_interval)]
     if args.render in ("off", "both"):
-        subprocess.run([sys.executable, __file__, "--_mode", "headless"] + common, check=True)
+        extra = ["--trace-out", args.trace_out + ".headless.csv"] if args.trace_out else []
+        subprocess.run([sys.executable, __file__, "--_mode", "headless"] + common + extra, check=True)
     if args.render in ("on", "both"):
-        subprocess.run([sys.executable, __file__, "--_mode", "render"] + common, check=True)
+        extra = ["--trace-out", args.trace_out + ".render.csv"] if args.trace_out else []
+        subprocess.run([sys.executable, __file__, "--_mode", "render"] + common + extra, check=True)
 
 
 if __name__ == "__main__":
