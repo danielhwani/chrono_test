@@ -100,15 +100,18 @@ def main():
             next_render_t += RENDER_DT
 
         if t >= next_title_t:
-            speeds = " ".join(f"{k}={m.GetMotorAngleDt():.0f}" for k, m in sorted(motors.items()))
-            vis.SetWindowTitle(f"Slip demo | diff={'ON' if diff_on else 'OFF'} | {speeds} rad/s")
+            # NOTE: SetWindowTitle() only takes effect once, before the render
+            # loop starts -- calling it again here does not update the actual
+            # window title, so live status is printed to the terminal instead.
+            speeds = " ".join(f"{k}={m.GetMotorAngleDt():+6.0f}" for k, m in sorted(motors.items()))
+            print(f"\rdiff={'ON ' if diff_on else 'OFF'} | {speeds} rad/s   ", end="", flush=True)
             next_title_t += 0.2
 
         sys_.DoStepDynamics(sv.TIME_STEP)
         t = sys_.GetChTime()
         realtime_timer.Spin(sv.TIME_STEP)
 
-    print("Done.")
+    print("\nDone.")
 
 
 if __name__ == "__main__":

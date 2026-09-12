@@ -138,9 +138,12 @@ def main():
     vis.AddCamera(cam_offset, chrono.ChVector3d(0, 0, 0.5))
     vis.AddTypicalLights()
 
+    print(f"Steering mode: {'ACKERMANN' if args.ackermann else 'PARALLEL'}"
+          f"{' (--ackermann)' if args.ackermann else ' (no --ackermann flag)'}")
     print("Controls (work no matter which window is focused):")
     print("  Up/W = forward   Down/S = reverse   Left/A = steer left   Right/D = steer right")
     print("  Space = stop   q/Esc = quit")
+    print("Live status is printed below (throttle / FL / FR / speed):")
 
     keys = GlobalKeyState()
     keys.start()
@@ -198,10 +201,19 @@ def main():
                 next_render_t += RENDER_DT
 
             if t >= next_title_t:
+                # NOTE: vis.SetWindowTitle() only takes effect once, before the
+                # render loop starts -- calling it again here does NOT update
+                # the actual window title (verified: the OS-level title stays
+                # frozen at whatever it was after Initialize()). So live status
+                # is printed to the terminal instead, which reliably updates.
                 speed = chassis.GetPosDt().Length()
-                vis.SetWindowTitle(
-                    f"Drive the Chrono Vehicle | throttle={throttle_cmd:+.0f} Nm  "
-                    f"steer={steer_cmd_deg:+.0f} deg  speed={speed:.1f} m/s"
+                fl_deg = math.degrees(steer_functions["FL"].GetVal(0)) if "FL" in steer_functions else 0.0
+                fr_deg = math.degrees(steer_functions["FR"].GetVal(0)) if "FR" in steer_functions else 0.0
+                mode = "ACKERMANN" if args.ackermann else "PARALLEL"
+                print(
+                    f"\r[{mode}] throttle={throttle_cmd:+7.1f} Nm  "
+                    f"FL={fl_deg:+6.2f} deg  FR={fr_deg:+6.2f} deg  speed={speed:5.2f} m/s   ",
+                    end="", flush=True,
                 )
                 next_title_t += 0.2
 
@@ -209,7 +221,7 @@ def main():
             realtime_timer.Spin(sv.TIME_STEP)
     finally:
         keys.stop()
-        print("Stopped.")
+        print("\nStopped.")
 
 
 if __name__ == "__main__":
