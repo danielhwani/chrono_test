@@ -20,6 +20,7 @@ cd /home/daniel/chrono_test
 | `drive_vehicle.py` | 같은 차량을 화살표/WASD 키로 직접 조종하는 버전. |
 | `slip_demo.py` | 한쪽 바퀴 저마찰 슬립 → 디퍼렌셜 개입 과정을 보여주는 6륜 전용 데모. |
 | `plot_results.py` | `vehicle_log.csv`를 읽어 궤적/속도/조향-요/서스펜션 그래프(`vehicle_results.png`) 생성. |
+| `compare_tire_models.py` | 같은 조향 시나리오를 rigid/empirical 두 타이어 모델로 각각 헤드리스 실행하고 겹쳐서 그래프(`tire_model_compare.png`)로 비교. |
 
 ## 모델 구조
 
@@ -56,6 +57,9 @@ python simple_vehicle.py --irrlicht --ackermann
 
 # 슬립 기반 타이어력 모델 (다른 옵션들과 자유롭게 조합 가능)
 python simple_vehicle.py --irrlicht --tire-model empirical
+
+# rigid vs empirical 비교 그래프 (헤드리스, 같은 조향 시나리오로 둘 다 돌려서 겹쳐 그림)
+python compare_tire_models.py --steer-deg 30 --steer-start 1.5 --steer-ramp 0.8 --time 6
 
 # 결과 그래프
 python plot_results.py
