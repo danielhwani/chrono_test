@@ -17,10 +17,17 @@ Model (per wheel corner):
   - Driven axles get an applied spin torque (via ChLinkMotorRotationTorque).
   - Ground: a large box with a friction/contact material.
 
+By default both front wheels get the exact same steer angle ("parallel"
+steering). --ackermann instead splits it into separate L/R angles via
+ackermann_wheel_angles_deg() -- a pure steering-input transform layered on
+top of the same steer_functions the model already exposes, so the vehicle
+assembly itself (make_vehicle) is unchanged either way.
+
 Run:
     python simple_vehicle.py              # headless, logs CSV + shows plots at end
     python simple_vehicle.py --irrlicht    # also opens a live 3D view (needs display)
     python simple_vehicle.py --six-wheel --irrlicht
+    python simple_vehicle.py --ackermann --irrlicht
     python simple_vehicle.py --steer-deg 25 --steer-start 1.5 --steer-ramp 0.8
 """
 import argparse
@@ -81,6 +88,29 @@ def steer_angle_deg(t, target_deg, start, ramp):
     if t >= start + ramp:
         return target_deg
     return target_deg * (t - start) / ramp
+
+
+def ackermann_wheel_angles_deg(steer_deg, wheelbase, track):
+    """Convert a single nominal ("bicycle model") front-steer angle into the
+    separate left/right wheel angles that satisfy Ackermann geometry: both
+    front wheels' steer axes then point at the same turn center (on the
+    extended rear-axle line), so neither tire has to scrub sideways.
+
+    steer_deg follows the existing sign convention (positive = turn right).
+    On a right turn the right wheel is on the inside of the turn and gets
+    the larger magnitude angle; on a left turn it's the opposite. Returns
+    (left_deg, right_deg). Purely a steering-input transform -- it does not
+    change the vehicle model, only how a commanded angle is split L/R.
+    """
+    if abs(steer_deg) < 1e-6:
+        return 0.0, 0.0
+    turn_radius = wheelbase / math.tan(math.radians(abs(steer_deg)))
+    inner_deg = math.degrees(math.atan(wheelbase / (turn_radius - track / 2)))
+    outer_deg = math.degrees(math.atan(wheelbase / (turn_radius + track / 2)))
+    sign = 1.0 if steer_deg > 0 else -1.0
+    if steer_deg > 0:  # turning right: right wheel is on the inside
+        return sign * outer_deg, sign * inner_deg
+    return sign * inner_deg, sign * outer_deg  # turning left: left wheel is on the inside
 
 
 def make_vehicle(sys: chrono.ChSystem, six_wheel: bool = False):
@@ -269,6 +299,9 @@ def main():
                          help="ramp duration [s] to reach the target steer angle")
     parser.add_argument("--six-wheel", action="store_true",
                          help="use the 3-axle (6-wheel) truck layout instead of the 4-wheel car")
+    parser.add_argument("--ackermann", action="store_true",
+                         help="split the commanded steer angle into separate L/R wheel angles "
+                              "via Ackermann geometry, instead of applying it to both equally")
     args = parser.parse_args()
 
     chrono.SetChronoDataPath(
@@ -285,13 +318,15 @@ def main():
         sys, six_wheel=args.six_wheel
     )
     susp_keys = sorted(springs.keys())
+    ackermann_wheelbase = WHEELBASE_6W if args.six_wheel else WHEELBASE
 
     log_path = os.path.join(os.path.dirname(__file__), "vehicle_log.csv")
     log_file = open(log_path, "w", newline="")
     writer = csv.writer(log_file)
     writer.writerow(
         ["time", "chassis_x", "chassis_y", "chassis_z", "roll_deg", "pitch_deg", "yaw_deg"]
-        + [f"susp_{k}" for k in susp_keys] + ["steer_deg", "speed_mps"]
+        + [f"susp_{k}" for k in susp_keys]
+        + ["steer_deg", "steer_FL_deg", "steer_FR_deg", "speed_mps"]
     )
 
     vis = None
@@ -331,9 +366,18 @@ def main():
                 next_render_t += RENDER_DT
 
         cur_steer_deg = steer_angle_deg(t, args.steer_deg, args.steer_start, args.steer_ramp)
-        cur_steer_rad = math.radians(cur_steer_deg)
-        for steer_fn in steer_functions.values():
-            steer_fn.SetConstant(cur_steer_rad)
+        if args.ackermann:
+            left_deg, right_deg = ackermann_wheel_angles_deg(
+                cur_steer_deg, ackermann_wheelbase, TRACK
+            )
+            if "FL" in steer_functions:
+                steer_functions["FL"].SetConstant(math.radians(left_deg))
+            if "FR" in steer_functions:
+                steer_functions["FR"].SetConstant(math.radians(right_deg))
+        else:
+            cur_steer_rad = math.radians(cur_steer_deg)
+            for steer_fn in steer_functions.values():
+                steer_fn.SetConstant(cur_steer_rad)
 
         apply_differential(motors, throttle_functions, DRIVE_TORQUE)
 
@@ -352,11 +396,13 @@ def main():
         vel = chassis.GetPosDt()
         speed = math.sqrt(vel.x ** 2 + vel.y ** 2)
 
+        steer_FL_deg = math.degrees(steer_functions["FL"].GetVal(0)) if "FL" in steer_functions else 0.0
+        steer_FR_deg = math.degrees(steer_functions["FR"].GetVal(0)) if "FR" in steer_functions else 0.0
         writer.writerow(
             [f"{t:.4f}", f"{pos.x:.4f}", f"{pos.y:.4f}", f"{pos.z:.4f}",
              f"{roll_deg:.3f}", f"{pitch_deg:.3f}", f"{yaw_deg:.3f}"]
             + [f"{springs[k].GetLength():.4f}" for k in susp_keys]
-            + [f"{cur_steer_deg:.3f}", f"{speed:.4f}"]
+            + [f"{cur_steer_deg:.3f}", f"{steer_FL_deg:.3f}", f"{steer_FR_deg:.3f}", f"{speed:.4f}"]
         )
 
     log_file.close()

@@ -41,7 +41,11 @@ def main():
     ax.grid(True)
 
     ax = axes[0, 2]
-    ax.plot(d["time"], d["steer_deg"], label="steer cmd")
+    ax.plot(d["time"], d["steer_deg"], label="steer cmd", linestyle="--")
+    if "steer_FL_deg" in d:
+        ax.plot(d["time"], d["steer_FL_deg"], label="steer FL")
+    if "steer_FR_deg" in d:
+        ax.plot(d["time"], d["steer_FR_deg"], label="steer FR")
     ax.plot(d["time"], d["yaw_deg"], label="yaw")
     ax.set_title("Steer angle / chassis yaw")
     ax.set_xlabel("time [s]")

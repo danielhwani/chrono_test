@@ -26,6 +26,7 @@ Requires: pip install pynput   (needs a real X11 session; DISPLAY must be set)
 Run:
     python drive_vehicle.py
     python drive_vehicle.py --six-wheel   # 3-axle truck instead of the 4-wheel car
+    python drive_vehicle.py --ackermann   # proper L/R Ackermann steer angles
 """
 import argparse
 import math
@@ -102,6 +103,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--six-wheel", action="store_true",
                          help="use the 3-axle (6-wheel) truck layout instead of the 4-wheel car")
+    parser.add_argument("--ackermann", action="store_true",
+                         help="split the steer command into separate L/R wheel angles via "
+                              "Ackermann geometry, instead of applying it to both equally")
     args = parser.parse_args()
 
     chrono.SetChronoDataPath(
@@ -121,6 +125,7 @@ def main():
     cam_offset = (
         chrono.ChVector3d(-9, -12, 5.0) if args.six_wheel else chrono.ChVector3d(-6, -8, 3.5)
     )
+    ackermann_wheelbase = sv.WHEELBASE_6W if args.six_wheel else sv.WHEELBASE
 
     vis = chronoirr.ChVisualSystemIrrlicht()
     vis.SetCameraVertical(chrono.CameraVerticalDir_Z)
@@ -170,8 +175,17 @@ def main():
             )
 
             sv.apply_differential(motors, throttle_functions, throttle_cmd)
-            for fn in steer_functions.values():
-                fn.SetConstant(math.radians(steer_cmd_deg))
+            if args.ackermann:
+                left_deg, right_deg = sv.ackermann_wheel_angles_deg(
+                    steer_cmd_deg, ackermann_wheelbase, sv.TRACK
+                )
+                if "FL" in steer_functions:
+                    steer_functions["FL"].SetConstant(math.radians(left_deg))
+                if "FR" in steer_functions:
+                    steer_functions["FR"].SetConstant(math.radians(right_deg))
+            else:
+                for fn in steer_functions.values():
+                    fn.SetConstant(math.radians(steer_cmd_deg))
 
             t = sys_.GetChTime()
             if t >= next_render_t:
