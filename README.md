@@ -36,6 +36,7 @@ cd /home/daniel/chrono_test
 - 타이어 모델(`--tire-model {rigid, empirical}`): 기본은 `rigid`(Bullet의 Coulomb 마찰 접촉, 지금까지 써온 방식). `empirical`은 바퀴-지면 마찰을 0으로 낮춰서 Bullet은 수직 반력만 담당하게 하고, 대신 `apply_tire_forces()`가 매 스텝 슬립비/슬립각을 직접 계산해서 선형-then-포화(friction circle) 힘 법칙으로 종/횡방향 힘을 얹어줍니다. 개념적으로 TMEASY와 비슷하지만 직접 만든 단순화 모델입니다.
   - 진짜 `ChTMeasyTire`(Chrono::Vehicle 정식 클래스)는 `ChWheel.Initialize()`가 `ChChassis`(→ `ChVehicle`)를 요구해서, 지금처럼 `ChBody`/`ChLink`로 직접 조립한 차량에는 못 붙입니다 — Chrono::Vehicle 클래스 체계로 차량을 통째로 다시 지어야 합니다. 그래서 기존 구조를 유지하는 자체 슬립 기반 모델로 대신했습니다.
   - Fz(수직하중)는 서스펜션 스프링 힘 대신 `wheel.GetContactForce()`(엔진이 실제로 계산한 접지력)를 씁니다 — 스프링 힘은 구동 반작용 토크 때문에 인장 방향으로 틀어지는 경우가 있어 하중 추정치로 부정확했습니다.
+- 지형(`--terrain {flat, bumps}`): 기본은 `flat`(기존 평평한 지면). `bumps`는 그 위에 반쯤 파묻힌 원통(지름 대비 낮게 튀어나오도록) 5개를 x=8m부터 6m 간격으로 일렬 배치해서 과속방지턱처럼 통과하게 만듭니다. 둘 다 `Fixed` 바디라 지면 박스와 겹쳐도 문제없음.
 
 ## 실행
 
@@ -61,6 +62,9 @@ python simple_vehicle.py --irrlicht --tire-model empirical
 # rigid vs empirical 비교 그래프 (헤드리스, 같은 조향 시나리오로 둘 다 돌려서 겹쳐 그림)
 python compare_tire_models.py --steer-deg 30 --steer-start 1.5 --steer-ramp 0.8 --time 6
 
+# 요철 구간 통과 (조향 없이 직진으로; x=8m부터 시작하니 --time을 충분히 줘야 다 지나감)
+python simple_vehicle.py --irrlicht --terrain bumps --steer-deg 0 --time 18
+
 # 결과 그래프
 python plot_results.py
 
@@ -69,6 +73,7 @@ python drive_vehicle.py
 python drive_vehicle.py --six-wheel
 python drive_vehicle.py --ackermann
 python drive_vehicle.py --tire-model empirical
+python drive_vehicle.py --terrain bumps
 
 # 6륜 슬립 → 디퍼렌셜 개입 시각화
 python slip_demo.py
@@ -82,6 +87,3 @@ python slip_demo.py --switch-time 4.0
 - **회전 시 전복 가능**: 무게중심 높이(1.19m)가 트랙폭(1.5m) 대비 높은 편이라, 급선회 중 계속 가속하면 전복함 (물리적으로는 타당한 현상).
 - Irrlicht 창은 `DISPLAY` 환경변수가 유효한 X11 세션이 있어야 뜸. `drive_vehicle.py`는 `pynput`으로 X서버 레벨 전역 키 입력을 사용하므로 터미널 포커스와 무관하게 동작함.
 
-## 다음에 이어서 할 만한 것
-
-- 요철(bump) 지형 통과 테스트

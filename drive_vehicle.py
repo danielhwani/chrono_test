@@ -109,6 +109,8 @@ def main():
     parser.add_argument("--tire-model", choices=["rigid", "empirical"], default="rigid",
                          help="'rigid' (default): Bullet Coulomb-friction wheel/ground contact. "
                               "'empirical': slip-based tire force law")
+    parser.add_argument("--terrain", choices=["flat", "bumps"], default="flat",
+                         help="'flat' (default), or 'bumps': a row of speed bumps ahead")
     args = parser.parse_args()
 
     chrono.SetChronoDataPath(
@@ -122,7 +124,7 @@ def main():
     sys_.GetSolver().AsIterative().SetMaxIterations(150)
 
     chassis, wheels, springs, motors, steer_functions, throttle_functions = sv.make_vehicle(
-        sys_, six_wheel=args.six_wheel
+        sys_, six_wheel=args.six_wheel, terrain=args.terrain
     )
 
     cam_offset = (
@@ -147,6 +149,7 @@ def main():
     print(f"Steering mode: {'ACKERMANN' if args.ackermann else 'PARALLEL'}"
           f"{' (--ackermann)' if args.ackermann else ' (no --ackermann flag)'}")
     print(f"Tire model: {args.tire_model}")
+    print(f"Terrain: {args.terrain}")
     print("Controls (work no matter which window is focused):")
     print("  Up/W = forward   Down/S = reverse   Left/A = steer left   Right/D = steer right")
     print("  Space = stop   q/Esc = quit")

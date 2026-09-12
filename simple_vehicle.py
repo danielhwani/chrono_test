@@ -86,6 +86,14 @@ DIFF_MAX_BIAS_FRACTION = 0.9  # cap the shift at this fraction of the nominal to
 
 GROUND_SIZE = 500.0      # flat square terrain, [m] per side, centered at origin
 
+# "bumps" terrain (--terrain bumps): a row of rounded speed bumps laid across
+# the vehicle's straight-ahead path, on top of the same flat ground.
+BUMP_HEIGHT = 0.12       # peak height above the flat ground, [m]
+BUMP_RADIUS = 0.35       # cylinder radius behind the bump -- bigger = gentler ramp
+BUMP_START_X = 8.0       # x position of the first bump
+BUMP_SPACING = 6.0       # distance between consecutive bumps
+BUMP_COUNT = 5
+
 STEER_DEG_DEFAULT = 20.0    # target steer angle (both front wheels, parallel)
 STEER_START_DEFAULT = 2.0   # sim time [s] when steering begins
 STEER_RAMP_DEFAULT = 1.0    # ramp duration [s] to reach the target angle
@@ -122,7 +130,7 @@ def ackermann_wheel_angles_deg(steer_deg, wheelbase, track):
     return sign * inner_deg, sign * outer_deg  # turning left: left wheel is on the inside
 
 
-def make_vehicle(sys: chrono.ChSystem, six_wheel: bool = False):
+def make_vehicle(sys: chrono.ChSystem, six_wheel: bool = False, terrain: str = "flat"):
     contact_method = sys.GetContactMethod()
     if contact_method == chrono.ChContactMethod_NSC:
         mat = chrono.ChContactMaterialNSC()
@@ -144,6 +152,24 @@ def make_vehicle(sys: chrono.ChSystem, six_wheel: bool = False):
         GROUND_SIZE / 5, GROUND_SIZE / 5,
     )
     sys.Add(ground)
+
+    # ---- bumps (optional): rounded ridges laid on top of the flat ground,
+    # spanning the vehicle's width so both wheels of an axle cross together.
+    # Mostly embedded in the ground box (both are Fixed, so the overlap is
+    # harmless) with only the top BUMP_HEIGHT poking up.
+    if terrain == "bumps":
+        bump_width = TRACK + 1.0
+        embed = BUMP_RADIUS - BUMP_HEIGHT
+        for i in range(BUMP_COUNT):
+            bump = chrono.ChBodyEasyCylinder(
+                chrono.ChAxis_Y, BUMP_RADIUS, bump_width, 1000, True, True, mat
+            )
+            bump.SetPos(chrono.ChVector3d(BUMP_START_X + i * BUMP_SPACING, 0, -embed))
+            bump.SetFixed(True)
+            bump.GetVisualShape(0).SetColor(chrono.ChColor(0.85, 0.75, 0.15))
+            sys.Add(bump)
+    elif terrain != "flat":
+        raise ValueError(f"unknown terrain {terrain!r} (expected 'flat' or 'bumps')")
 
     # ---- chassis ----
     chassis_dims = CHASSIS_DIMS_6W if six_wheel else CHASSIS_DIMS
@@ -390,6 +416,9 @@ def main():
     parser.add_argument("--tire-model", choices=["rigid", "empirical"], default="rigid",
                          help="'rigid' (default): Bullet Coulomb-friction wheel/ground contact. "
                               "'empirical': slip-based tire force law (see apply_tire_forces)")
+    parser.add_argument("--terrain", choices=["flat", "bumps"], default="flat",
+                         help="'flat' (default), or 'bumps': a row of speed bumps starting at "
+                              f"x={BUMP_START_X}, spaced {BUMP_SPACING}m apart")
     args = parser.parse_args()
 
     chrono.SetChronoDataPath(
@@ -403,7 +432,7 @@ def main():
     sys.GetSolver().AsIterative().SetMaxIterations(150)
 
     chassis, wheels, springs, motors, steer_functions, throttle_functions = make_vehicle(
-        sys, six_wheel=args.six_wheel
+        sys, six_wheel=args.six_wheel, terrain=args.terrain
     )
     susp_keys = sorted(springs.keys())
     ackermann_wheelbase = WHEELBASE_6W if args.six_wheel else WHEELBASE
