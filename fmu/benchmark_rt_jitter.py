@@ -18,8 +18,21 @@ the other kernel, run it again, and then compare both with
 plot_rt_comparison.py -- across a reboot, so nothing here keeps a live
 process running or does the reboot itself.
 
+There are actually two independent "RT" toggles:
+  - the KERNEL itself (PREEMPT_RT vs generic) -- needs a reboot to switch.
+  - this PROCESS's scheduling policy (SCHED_OTHER, the normal
+    time-shared default, vs SCHED_FIFO, a fixed-priority real-time
+    class) -- switchable instantly with no reboot via --sched, using
+    os.sched_setscheduler(). Needs either root or an rtprio ulimit (this
+    account already has one: `ulimit -r` -> 99).
+--sched fifo makes sense on either kernel, so results are tagged with
+both kernel and scheduling policy (e.g. "5.15.0-1112-realtime+FIFO"),
+and plot_rt_comparison.py will happily overlay all four combinations if
+you collect them.
+
 Run:
-    python benchmark_rt_jitter.py                  # ~10s, saves rt_results/<kernel>.json
+    python benchmark_rt_jitter.py                  # ~10s, SCHED_OTHER, saves rt_results/<kernel>.json
+    python benchmark_rt_jitter.py --sched fifo      # same kernel, SCHED_FIFO priority instead
     python benchmark_rt_jitter.py --sim-time 20
 """
 import argparse
@@ -64,10 +77,25 @@ def main():
     parser.add_argument("--step-size", type=float, default=2e-3)
     parser.add_argument("--label", default=None,
                          help="override the auto-detected kernel label used for the output filename")
+    parser.add_argument("--sched", choices=["other", "fifo"], default="other",
+                         help="'other' (default): normal time-shared scheduling. "
+                              "'fifo': elevate this process to SCHED_FIFO real-time priority "
+                              "(no reboot needed, but needs root or an rtprio ulimit).")
+    parser.add_argument("--rt-priority", type=int, default=10,
+                         help="SCHED_FIFO priority 1-99 (only used with --sched fifo)")
     args = parser.parse_args()
 
     if not os.path.exists(args.fmu):
         raise SystemExit(f"{args.fmu} not found -- build it first with pythonfmu build")
+
+    if args.sched == "fifo":
+        try:
+            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(args.rt_priority))
+        except PermissionError as e:
+            raise SystemExit(
+                f"Could not set SCHED_FIFO ({e}). Needs root, or an rtprio ulimit "
+                f"(check: ulimit -r)."
+            )
 
     import pychrono as chrono
     fmu, vr = make_fmu_instance(args.fmu)
@@ -92,9 +120,13 @@ def main():
 
     periods_sorted = sorted(periods)
     target = args.step_size
+    kernel_label = args.label or platform.uname().release
+    if args.sched == "fifo":
+        kernel_label += f"+FIFO{args.rt_priority}"
     stats = {
-        "kernel": args.label or platform.uname().release,
+        "kernel": kernel_label,
         "is_realtime_kernel": os.path.exists("/sys/kernel/realtime"),
+        "sched_policy": args.sched,
         "step_size": target,
         "n_samples": len(periods),
         "mean": sum(periods) / len(periods),
@@ -107,7 +139,8 @@ def main():
         "periods": periods,  # full trace, for histogram plotting
     }
 
-    print(f"kernel: {stats['kernel']}  (PREEMPT_RT: {stats['is_realtime_kernel']})")
+    print(f"kernel: {platform.uname().release}  (PREEMPT_RT kernel: {stats['is_realtime_kernel']})  "
+          f"process sched: {'SCHED_FIFO prio=' + str(args.rt_priority) if args.sched == 'fifo' else 'SCHED_OTHER'}")
     print(f"target loop period: {target * 1e6:.0f} us   n={stats['n_samples']}")
     for k in ("mean", "min", "p50", "p95", "p99", "p999", "max"):
         dev = (stats[k] - target) * 1e6

@@ -152,4 +152,22 @@ python plot_rt_comparison.py                   # rt_results/ 안의 모든 결�
 2. `conda activate chrono && cd ~/chrono_test/fmu && python benchmark_rt_jitter.py --sim-time 15`
 3. 다시 RT 커널로 재부팅해도 되고, 아니면 그 상태에서 `python plot_rt_comparison.py`만 실행 — `rt_results/`에 두 커널 결과가 다 쌓여있으면 자동으로 같이 그려짐(현재 코드는 이미 이 두 파일을 처리하도록 되어 있고, 지금은 RT 결과 하나만 있어서 그래프도 한 종류만 나옴)
 
+**"RT"는 사실 두 개로 나뉨** — 위는 **커널** 레벨(재부팅 필요) 비교였고, 별개로 **프로세스 스케줄링 정책**(SCHED_OTHER ↔ SCHED_FIFO)은 재부팅 없이 즉시 켜고 끌 수 있음(`os.sched_setscheduler`, 이 계정은 `ulimit -r`=99라 root 없이도 가능):
+```bash
+python benchmark_rt_jitter.py --sim-time 15 --sched fifo --rt-priority 10
+python plot_rt_comparison.py
+```
+**실측 결과 (같은 RT 커널, SCHED_OTHER vs SCHED_FIFO prio=10)** — 반직관적인 결과가 나옴:
+
+| 지표 | SCHED_OTHER(기본) | SCHED_FIFO(prio 10) |
+|---|---|---|
+| p50 | +0.0μs | +0.0μs |
+| p95 | +1.2μs | **+0.7μs (더 좋음)** |
+| p99 | +3.2μs | +10.2μs |
+| p999 | +66.9μs | **+47,843μs (47.8ms)** |
+| max | +1,693μs (1.85배) | **+52,515μs (26배)** |
+| 2배 초과 | 0건 | 14건 (0.187%) |
+
+평상시(p50~p95)는 SCHED_FIFO가 오히려 살짝 더 좋아지는데, **최악의 경우(tail)는 30배 가까이 나빠짐**. 이 머신이 GNOME Shell·브라우저 등이 같이 떠 있는 일반 데스크톱이라(격리된 RT 전용 머신이 아님), 우선순위 10 정도로는 시스템의 다른 스레드와 충돌해서 드물게 큰 스톨이 생기는 것으로 보임(정확한 커널 레벨 원인은 미확인 — 우선순위 역전, 메모리 할당/GC 중 발생한 페이지 폴트가 더 급한 커널 스레드에 밀리는 경우 등을 의심 중). 실제 RT 배포에서 `isolcpus`/`taskset`으로 코어를 격리하고 커널 스레드 우선순위까지 같이 신경 쓰는 이유가 이런 것 — 프로세스만 SCHED_FIFO로 올린다고 공짜로 좋아지는 게 아님.
+
 트레이드오프: 이 분리는 ROS2/Simulink 등 외부 툴과 실제로 연동할 때 값어치가 있고, 계속 이 레포 안에서만 쓸 거면 지금 구조 대비 초기 비용이 큼.
