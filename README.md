@@ -105,7 +105,10 @@ pip install pythonfmu fmpy   # 이 env엔 아직 없어서 따로 설치 필요
 cd fmu
 pythonfmu build -f free_fall_fmu.py -d build   # build/FreeFall.fmu 생성
 python validate_fmu.py                          # fmpy로 로드+시뮬레이션, 해석해와 비교
+python plot_free_fall.py                        # h(t)/v(t) 그래프 (free_fall.png)
+python render_free_fall.py                      # Irrlicht 실시간 렌더링 (차량 데모와 같은 스타일)
 ```
+`render_free_fall.py`는 `fmpy.fmi2.FMU2Slave`로 FMU를 직접 스텝핑하면서, 그 결과값(`h`)으로 공의 위치만 움직이는 식 — Chrono는 여기서 물리 계산을 전혀 안 하고 순수 시각화 용도로만 씀. 공이 좌우로는 안 움직이고 수직으로만 빠르게 낙하해서, 차량 데모처럼 체이스캠을 쓰면 카메라가 지면 아래로 파고들어 오히려 어색해짐 — 그래서 고정 카메라로 프레이밍함.
 `h`(높이)는 스텝 크기에 따른 1차 적분기 이산화 오차가 있어서(`output_interval=0.5`일 땐 오차 커짐, `1e-4`로 줄이면 0.001m 이내로 수렴), `v`(속도)는 스텝 크기와 무관하게 해석해와 항상 정확히 일치 — 둘 다 버그가 아니라 예상된 수치적 특성이며, `pythonfmu` co-simulation FMU는 `do_step`이 `output_interval` 간격으로 호출된다는 것도 이때 확인됨.
 
 트레이드오프: 이 분리는 ROS2/Simulink 등 외부 툴과 실제로 연동할 때 값어치가 있고, 계속 이 레포 안에서만 쓸 거면 지금 구조 대비 초기 비용이 큼.
