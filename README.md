@@ -140,4 +140,16 @@ python plot_realtime_benchmark.py --sim-time 5
 ```
 결과(`realtime_pacing.png`): 헤드리스는 처음부터 끝까지 편차 0에 딱 붙어있고, 렌더링 포함은 시작부터 약 0.11s 앞서 벌어진 채 이후 거의 선형으로 계속 커져서 5초 뒤엔 약 0.48~0.58s 차이로 끝남 — 초반의 계단형 점프(예: t≈1.1s 부근)는 아마 첫 바운스 등 이벤트성 비용과 관련된 것으로 보임(원인 미확정).
 
+**RT 커널 vs 일반 커널 비교** (`benchmark_rt_jitter.py` + `plot_rt_comparison.py`, 렌더링 제외): 이 머신은 PREEMPT_RT 커널(`5.15.0-1112-realtime`)로 부팅돼 있고, 일반 커널(`6.8.0-138-generic`)도 같이 설치돼 있음. `benchmark_realtime.py --pacing on`이 재는 "누적 편차"와 달리, 여긴 **루프 한 스텝 한 스텝의 주기 자체를 전부 기록**해서 퍼센타일/최악값(tail latency)을 봄 — PREEMPT_RT가 실제로 개선하는 건 평균이 아니라 이런 드문 큰 지연(스케줄링 스톨)이기 때문:
+```bash
+python benchmark_rt_jitter.py --sim-time 15   # 지금 부팅된 커널 기준, rt_results/<커널명>.json 저장
+python plot_rt_comparison.py                   # rt_results/ 안의 모든 결과를 히스토그램으로 겹쳐 그림
+```
+**RT 커널 실측 결과** (스텝 목표 2000μs, n=7500): mean +0.5μs, p50 +0.0μs, p95 +1.2μs, p99 +3.2μs, p999 +66.9μs, **max +1693.4μs**(목표의 1.85배) — 2배 초과 0건. 즉 거의 대부분 목표에 딱 맞고, 아주 드물게 한 번씩 ms 단위로 튀는 정도.
+
+**일반 커널과 비교하려면** (재부팅 필요 — 반드시 직접 하실 것, 이 세션은 재부팅되면 끊김):
+1. `6.8.0-138-generic`으로 재부팅
+2. `conda activate chrono && cd ~/chrono_test/fmu && python benchmark_rt_jitter.py --sim-time 15`
+3. 다시 RT 커널로 재부팅해도 되고, 아니면 그 상태에서 `python plot_rt_comparison.py`만 실행 — `rt_results/`에 두 커널 결과가 다 쌓여있으면 자동으로 같이 그려짐(현재 코드는 이미 이 두 파일을 처리하도록 되어 있고, 지금은 RT 결과 하나만 있어서 그래프도 한 종류만 나옴)
+
 트레이드오프: 이 분리는 ROS2/Simulink 등 외부 툴과 실제로 연동할 때 값어치가 있고, 계속 이 레포 안에서만 쓸 거면 지금 구조 대비 초기 비용이 큼.
