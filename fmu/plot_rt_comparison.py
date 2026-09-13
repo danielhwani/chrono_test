@@ -16,7 +16,7 @@ import os
 import matplotlib.pyplot as plt
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "rt_results")
-COLORS = ["tab:blue", "tab:red", "tab:green", "tab:orange"]
+COLORS = ["tab:blue", "tab:red", "tab:green", "tab:orange", "tab:purple", "tab:brown", "tab:cyan", "tab:pink"]
 
 
 def main():

@@ -259,6 +259,30 @@ cd driver
 
 Python을 fmpy 드라이버에서 C `dlopen` 드라이버로 바꾸는 것만으로 2,685.9ns → 3.67ns, 약 730배 빨라짐 — 격차의 대부분이 "FMU 내부 구현이 Python이냐"가 아니라 "구동 측(driver)이 Python/ctypes냐"였다는 뜻. 완전 네이티브 경로는 이제 순수 C++ 상한선의 1.5배 이내(FMI 함수 포인터 호출 몇 개의 오버헤드)까지 근접.
 
+**네이티브 FMU의 페이싱(paced) 버전 — Python·C++ 둘 다**: 위 `bench`/`csv`는 둘 다 플랫아웃(가능한 빨리 실행)이라 실제 페이싱(wall-clock과 맞추기)이 아님. 아래처럼 Python·C++ 양쪽에 페이싱 모드를 추가함:
+
+```bash
+# Python: 기존 benchmark_rt_jitter.py가 --fmu로 임의의 FMU를 받게 이미 되어 있어서,
+# 네이티브 FMU 경로를 그냥 가리키기만 하면 됨 (새 파일 불필요)
+python fmu/benchmark_rt_jitter.py --fmu fmu/cpp/native_fmu/bouncing_ball_native.fmu --sim-time 60 --label native-py-60s
+
+# C++: fmu_driver에 새로 추가한 paced 모드. bouncing_ball.cpp --paced와 동일한
+# yield() 기반 대기 + 퍼센타일 출력 + rt_results/*.json과 같은 스키마의 --json-out
+cd fmu/cpp/native_fmu/driver
+./fmu_driver ../binaries/linux64/bouncing_ball_native.so paced 60 0.002 --json-out ../../../rt_results/cpp-native-fmu-driver-60s.json
+```
+
+**결과 (60초, n=30000, SCHED_OTHER) — "네이티브 FMU + 네이티브 드라이버" vs 기존 "FMU 없는 순수 C++/Python 페이싱 루프" 비교**:
+
+| 결과 파일 | p50 | p95 | p99 | p999 | max |
+|---|---|---|---|---|---|
+| `py-other-60s` (기존, FMU 없음) | 2000.0us | 2001.1us | 2002.8us | 2058.2us | 13090.4us |
+| `native-py-60s` (네이티브 FMU + fmpy) | 2000.0us | 2001.0us | 2002.7us | 2020.6us | 4602.4us |
+| `cpp-other-60s` (기존, FMU 없음) | 2000.0us | 2000.5us | 2000.6us | 2010.9us | 2040.7us |
+| `cpp-native-fmu-driver-60s` (네이티브 FMU + `fmu_driver`) | 2000.0us | 2000.5us | 2000.7us | 2014.1us | 4714.6us |
+
+p50~p99까지는 FMU를 끼우든 안 끼우든, 언어가 Python이든 C++이든 사실상 동일함 — `--paced`/`paced` 루프의 페이싱 정밀도는 OS 스케줄러 레벨 현상이지 FMI 레이어나 언어가 좌우하는 게 아니라는, 앞의 결론(`### C++ 페이싱` 아래 결론과 SCHED_FIFO 재검증 결과)과 일관됨. p999/max의 산발적인 큰 값(4.6~4.7ms)은 이 머신이 격리 안 된 일반 데스크톱이라 다른 프로세스에 밀리는 드문 스톨로, run마다 위치만 다를 뿐 양쪽 다 비슷한 빈도로 나타남. `rt_comparison.png`를 다시 그리면(`python fmu/plot_rt_comparison.py`) 6개 결과 세트가 모두 겹쳐 보임.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
