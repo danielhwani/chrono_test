@@ -3,3 +3,4 @@ __pycache__/
 .*.swp
 fmu/build/
 fmu/cpp/bouncing_ball
+fmu/cpp/*.csv

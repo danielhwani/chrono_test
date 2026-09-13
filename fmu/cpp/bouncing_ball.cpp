@@ -12,15 +12,29 @@
 //
 // Usage:
 //   bouncing_ball --csv [sim_time] [dt]      print time,h,v to stdout
-//   bouncing_ball --bench [sim_time] [dt]    time N steps, report ns/step and RTF
+//   bouncing_ball --bench [sim_time] [dt]    flat-out speed, report ns/step and RTF
+//   bouncing_ball --paced [sim_time] [dt]    actually pace to wall-clock time
+//                                            (like benchmark_rt_jitter.py's Spin()
+//                                            loop, not benchmark_realtime.py's RTF)
+//                                            -- reports per-step period percentiles
+//
+// --bench (and plain --csv) run flat-out with no synchronization to wall-clock
+// time at all -- useful for "how much compute headroom is there" but NOT a
+// real-time-paced loop. --paced is the C++ equivalent of the Python
+// ChRealtimeStepTimer.Spin() loop: sleep for most of each step's budget, then
+// busy-spin the last ~150us for precision (plain sleep_until alone has Linux
+// scheduler wake-up jitter well over 10us, even under PREEMPT_RT).
 //
 // Build:
 //   g++ -O2 -o bouncing_ball bouncing_ball.cpp
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
+#include <vector>
 
 struct State {
     double h;
@@ -69,6 +83,67 @@ static void run_bench(double sim_time, double dt) {
                  s.h, s.v);
 }
 
+static double percentile(std::vector<double>& sorted_vals, double p) {
+    size_t idx = std::min(static_cast<size_t>(sorted_vals.size() * p), sorted_vals.size() - 1);
+    return sorted_vals[idx];
+}
+
+static void run_paced(double sim_time, double dt) {
+    using clock = std::chrono::steady_clock;
+    State s{10.0, 0.0};
+    const double g = -9.81, e = 0.7, floor = 0.0;
+    long n_steps = static_cast<long>(sim_time / dt);
+    const auto dt_dur = std::chrono::duration<double>(dt);
+    const auto spin_margin = std::chrono::microseconds(150);  // busy-spin the last bit for precision
+
+    std::vector<double> periods;
+    periods.reserve(n_steps);
+
+    auto next = clock::now();
+    auto prev = next;
+    for (long i = 0; i < n_steps; ++i) {
+        step(s, g, e, floor, dt);
+
+        next += std::chrono::duration_cast<clock::duration>(dt_dur);
+        auto now = clock::now();
+        if (next > now) {
+            if (next - now > spin_margin) {
+                std::this_thread::sleep_until(next - spin_margin);
+            }
+            while (clock::now() < next) {
+                // busy-spin for sub-microsecond precision near the deadline
+            }
+        }
+        auto actual = clock::now();
+        periods.push_back(std::chrono::duration<double>(actual - prev).count());
+        prev = actual;
+    }
+
+    std::vector<double> sorted_periods = periods;
+    std::sort(sorted_periods.begin(), sorted_periods.end());
+
+    double sum = 0.0;
+    for (double p : periods) sum += p;
+    double mean = sum / periods.size();
+
+    std::printf("target step period: %.0f us   n=%ld\n", dt * 1e6, n_steps);
+    auto print_metric = [&](const char* name, double val) {
+        std::printf("  %5s: %8.1f us   (target %+.1f us)\n", name, val * 1e6, (val - dt) * 1e6);
+    };
+    print_metric("mean", mean);
+    print_metric("min", sorted_periods.front());
+    print_metric("p50", percentile(sorted_periods, 0.50));
+    print_metric("p95", percentile(sorted_periods, 0.95));
+    print_metric("p99", percentile(sorted_periods, 0.99));
+    print_metric("p999", percentile(sorted_periods, 0.999));
+    print_metric("max", sorted_periods.back());
+
+    long n_over_2x = 0;
+    for (double p : periods) if (p > 2 * dt) ++n_over_2x;
+    std::printf("  iterations > 2x target: %ld (%.3f%%)\n", n_over_2x,
+                100.0 * n_over_2x / periods.size());
+}
+
 int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "--csv";
     double sim_time = argc > 2 ? std::stod(argv[2]) : 8.0;
@@ -78,8 +153,10 @@ int main(int argc, char** argv) {
         run_csv(sim_time, dt);
     } else if (mode == "--bench") {
         run_bench(sim_time, dt);
+    } else if (mode == "--paced") {
+        run_paced(sim_time, dt);
     } else {
-        std::fprintf(stderr, "usage: %s [--csv|--bench] [sim_time] [dt]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--csv|--bench|--paced] [sim_time] [dt]\n", argv[0]);
         return 1;
     }
     return 0;
