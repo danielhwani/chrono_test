@@ -197,6 +197,8 @@ g++ -O2 -o bouncing_ball bouncing_ball.cpp
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
+이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
+
 위 벤치마크는 전부 **페이싱 없이 최대 속도**로 돈 것("이것은 페이싱이 아니잖아"라는 지적을 받고, `--paced` 모드를 추가함). 처음엔 `sleep_until`(대부분 sleep) + 마지막 150μs busy-spin 방식으로 짰는데:
 
 | 지표 | Python (fmpy + `ChRealtimeStepTimer.Spin()`) | C++ (`sleep_until` + busy-spin, 초기 버전) |
