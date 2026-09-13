@@ -94,7 +94,7 @@ python slip_demo.py --switch-time 4.0
 - **모델**: URDF로 링크-조인트 토폴로지(+관성)만 분리 (아직 미착수). URDF는 순수 기구학 트리라 스프링/디퍼렌셜/타이어력 같은 로직은 못 담음 — 그건 결국 동역학 레이어에 남음.
 - **동역학**: FMU로 래핑.
   1. **`pythonfmu`** (진행 중, `fmu/` 디렉터리): 순수 Python이라 Chrono/C++을 새로 빌드할 필요 없음. 실행 쪽에 Python 런타임이 있어야 하는 게 유일한 제약.
-  2. Chrono 네이티브 `chrono_fmi` 모듈은 conda `pychrono` 바이너리엔 없고 C++ 소스 빌드가 필요해서 보류.
+  2. Chrono 공식 `chrono_fmi` export 모듈 자체는 conda `pychrono` 바이너리에 없음. 다만 **"Chrono를 C++에서 쓰려면 소스 빌드가 필요하다"는 건 틀렸다는 게 나중에 밝혀짐** — conda `chrono` env 안에 Chrono의 C++ 헤더/라이브러리(`libChrono_core.so` 등)가 이미 들어 있어서, 그걸 직접 링크하는 손수 FMI2 C++ 래퍼로 우회 성공함. 자세한 내용은 아래 "완성: 네이티브 FMU 안에서 진짜 ChSystemNSC 호출" 섹션 참고.
 - **제어**: ros_control 스타일 — 아직 미착수.
 
 **진행 상황**: `fmu/` 아래에 pythonfmu 툴체인 자체를 검증하는 토이 FMU(`free_fall_fmu.py`, 자유낙하 적분기)를 먼저 만들어 빌드→로드→시뮬레이션이 실제로 동작하는지 확인 완료. 다음 단계는 이 틀에 실제 차량(`make_vehicle`) 동역학을 넣는 것.
@@ -187,7 +187,7 @@ C++이 여전히 명확히 이기는 영역은 **원시 계산 속도**뿐임(`-
 
 ## C++ 버전 (fmu/cpp/)
 
-같은 바운싱볼 모델을 **의존성 없는 순수 C++**로도 포팅함 — Python 버전(`bouncing_ball_fmu.py`)의 물리 로직 자체가 애초에 PyChrono 없이 스칼라 수식(중력 적분 + 바닥 반사)뿐이었어서, C++ 이식도 Chrono 없이 가능함. FMU로 감싸서 구동 측까지 C++로 가는 것(실시간성 향상이 목적)의 첫 단계 — 렌더링은 Chrono/Irrlicht C++ 라이브러리를 별도로 빌드해야 해서(`chrono_fmi`와 같은 장벽) 현재는 보류.
+같은 바운싱볼 모델을 **의존성 없는 순수 C++**로도 포팅함 — Python 버전(`bouncing_ball_fmu.py`)의 물리 로직 자체가 애초에 PyChrono 없이 스칼라 수식(중력 적분 + 바닥 반사)뿐이었어서, C++ 이식도 Chrono 없이 가능함. FMU로 감싸서 구동 측까지 C++로 가는 것(실시간성 향상이 목적)의 첫 단계 — 렌더링(Irrlicht)은 아직 시도 안 해서 보류 중. (참고: "Chrono를 C++에서 쓰려면 소스 빌드가 필요하다"는 가정 자체는 아래에서 틀린 것으로 확인됨 — conda env에 `libChrono_irrlicht.so`도 이미 있어서 렌더링 쪽도 같은 방식으로 될 가능성이 있으나 미검증.)
 
 ```bash
 cd fmu/cpp
@@ -359,7 +359,7 @@ fmpy로 구동해보면 물리 자체는 정상(바닥 비침투, 바운스마�
 
 **원인 정리**: `pythonfmu`가 컴파일하는 `.so`는 완전히 독립적인 라이브러리가 아니라, **자신을 dlopen하는 프로세스가 이미 Python 프로세스일 것**(그래서 `libpython` 심볼이 이미 전역 심볼 테이블에 있을 것)을 전제로 함. `fmpy`는 그 자체가 Python 프로세스라 문제없이 동작하고(우리가 이번 세션 내내 잘 썼던 이유), 우리 `fmu_driver`(C)도 결국 이 FMU엔 못 씀(같은 이유). `OMSimulator`/`OMEdit`도 순수 C++ 바이너리라 마찬가지로 안 됨.
 
-**결론**: Chrono 물리를 담은 FMU를 Modelica GUI가 master로 불러오려면, 지금처럼 `pythonfmu`로 Python을 통해 감싸는 방식이 아니라 **C/C++에서 직접 Chrono API를 호출하는 네이티브 FMU**(`fmu/cpp/native_fmu/`가 손물리 대신 실제 `ChSystemNSC` 호출을 하도록 만든 버전)가 필요함 — 이게 바로 README 앞부분에서 언급한, conda `pychrono` 빌드엔 없어서 보류해둔 `chrono_fmi`(Chrono 공식 C++ FMU export 모듈) 경로와 같은 결론으로 다시 수렴함. 즉 "Python으로 감싼 Chrono"는 Python 쪽 master(fmpy 등)까지만 통하고, "진짜 언어 무관 FMU"가 되려면 결국 Chrono를 C++ 소스에서 직접 빌드해야 함.
+**결론**: Chrono 물리를 담은 FMU를 Modelica GUI가 master로 불러오려면, 지금처럼 `pythonfmu`로 Python을 통해 감싸는 방식이 아니라 **C/C++에서 직접 Chrono API를 호출하는 네이티브 FMU**(`fmu/cpp/native_fmu/`가 손물리 대신 실제 `ChSystemNSC` 호출을 하도록 만든 버전)가 필요함. 즉 "Python으로 감싼 Chrono"는 Python 쪽 master(fmpy 등)까지만 통하고, "진짜 언어 무관 FMU"가 되려면 C++에서 Chrono를 직접 호출해야 함 — 이때는 "Chrono를 C++ 소스에서 새로 빌드해야 하나?"가 걱정이었는데, 바로 다음 섹션("완성: ...")에서 확인했듯 **불필요했음**(conda env에 이미 C++ 헤더/라이브러리가 있었음).
 
 **검증**: 위 결론이 정말 "Python이 문제였다"인지, 아니면 OMSimulator/FMI 조합 자체가 우리 FMU와 안 맞는 건지 구분하기 위해, **이미 갖고 있던 Python-무관 FMU**(`fmu/cpp/native_fmu/bouncing_ball_native.fmu` — 손으로 짠 C 물리라 Chrono는 아니지만, `ldd`로 확인했듯 `libc.so.6`만 링크된 완전히 독립적인 `.so`)를 그대로 `OMSimulator`에 넣어봄:
 
