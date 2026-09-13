@@ -17,9 +17,26 @@
  * That completes the fully-native path: native FMU + native driver.
  *
  * Usage:
- *   ./fmu_driver <path-to-.so> bench  <sim_time_s> <dt_s>
- *   ./fmu_driver <path-to-.so> csv    <sim_time_s> <dt_s>
- *   ./fmu_driver <path-to-.so> paced  <sim_time_s> <dt_s> [fifo <priority>] [--json-out PATH]
+ *   ./fmu_driver <extracted-fmu-dir> bench  <sim_time_s> <dt_s>
+ *   ./fmu_driver <extracted-fmu-dir> csv    <sim_time_s> <dt_s>
+ *   ./fmu_driver <extracted-fmu-dir> paced  <sim_time_s> <dt_s> [fifo <priority>] [--json-out PATH]
+ *
+ * <extracted-fmu-dir> is a directory containing modelDescription.xml and
+ * binaries/linux64/<modelIdentifier>.so -- i.e. an FMU already unzipped (a
+ * .fmu file IS just that layout zipped up). For our own native_fmu, that's
+ * the native_fmu/ directory itself (build.sh leaves the unzipped layout in
+ * place alongside the .fmu it also produces). For a third-party .fmu, unzip
+ * it first: `mkdir foo_extracted && unzip foo.fmu -d foo_extracted`.
+ *
+ * This driver is deliberately NOT specific to our own model: it reads the
+ * FMU's own modelDescription.xml at startup to find the GUID, the
+ * modelIdentifier (so it knows which .so to dlopen), and the value
+ * references of the two variables it knows how to drive/print: "h" and
+ * "v". Any FMI2 Co-Simulation FMU exposing Real variables literally named
+ * "h" and "v" works here unmodified -- e.g. fmu/cpp/native_fmu/ (our
+ * hand-written one) or fmu/modelica/BouncingBallModelica.fmu (built by
+ * OpenModelica's omc), which don't share a GUID or variable numbering with
+ * each other at all.
  *
  *   bench -- flat-out fmi2DoStep loop (no pacing), reports ns/step and RTF.
  *            Compare directly against `bouncing_ball --bench` to see the
@@ -37,7 +54,9 @@
  * Build: see ./build.sh (needs -ldl).
  */
 #include <dlfcn.h>
+#include <limits.h>
 #include <sched.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,15 +100,6 @@ typedef fmi2Status (*fmi2Terminate_t)(fmi2Component);
 typedef fmi2Status (*fmi2SetReal_t)(fmi2Component, const fmi2ValueReference[], size_t, const fmi2Real[]);
 typedef fmi2Status (*fmi2GetReal_t)(fmi2Component, const fmi2ValueReference[], size_t, fmi2Real[]);
 typedef fmi2Status (*fmi2DoStep_t)(fmi2Component, fmi2Real, fmi2Real, fmi2Boolean);
-
-/* value references, must match modelDescription.xml / bouncing_ball_native.c */
-#define VR_G 0
-#define VR_E 1
-#define VR_FLOOR 2
-#define VR_H 3
-#define VR_V 4
-
-#define GUID "{a1b2c3d4-e5f6-4789-a012-3456789abcde}"
 
 /* ---- runtime context (kernel + this process's scheduling policy), same
  * fields/format as bouncing_ball.cpp's get_runtime_context/print_runtime_context ---- */
@@ -181,6 +191,64 @@ static double now_s(void) {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+/* ---- tiny modelDescription.xml scanner ----
+ * Not a real XML parser -- just enough to pull `attr="value"` out of the
+ * well-formed, single-line-per-attribute XML that both our own hand-written
+ * modelDescription.xml and OpenModelica's omc-generated one use. Searches
+ * forward from `search_from` for `attr_name="`, copies out everything up to
+ * the closing quote. Returns 0 (and leaves out untouched) if not found. */
+static int find_attr_value(const char* search_from, const char* attr_name, char* out, size_t out_size) {
+    char needle[64];
+    snprintf(needle, sizeof(needle), "%s=\"", attr_name);
+    const char* p = strstr(search_from, needle);
+    if (!p) return 0;
+    p += strlen(needle);
+    const char* q = strchr(p, '"');
+    if (!q) return 0;
+    size_t len = (size_t)(q - p);
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return 1;
+}
+
+/* Real callback functions instead of NULL: our own hand-written FMU tolerates
+ * a NULL fmi2CallbackFunctions* (falls back to malloc), but the FMI2 spec
+ * doesn't actually make these optional, and OpenModelica-generated FMUs
+ * dereference them unconditionally (e.g. to log during instantiation) --
+ * passing NULL segfaults inside their fmi2Instantiate. fmpy always supplies
+ * real callbacks for the same reason. */
+static void fmu_logger(fmi2ComponentEnvironment env, fmi2String instanceName, fmi2Status status,
+                        fmi2String category, fmi2String message, ...) {
+    (void)env; (void)status;
+    va_list ap;
+    va_start(ap, message);
+    fprintf(stderr, "[%s|%s] ", instanceName ? instanceName : "?", category ? category : "?");
+    vfprintf(stderr, message, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+}
+
+static void* fmu_alloc(size_t nobj, size_t size) { return calloc(nobj, size); }
+static void fmu_free(void* p) { free(p); }
+
+static char* read_whole_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = malloc((size_t)size + 1);
+    if (fread(buf, 1, (size_t)size, f) != (size_t)size) {
+        fclose(f);
+        free(buf);
+        return NULL;
+    }
+    buf[size] = '\0';
+    fclose(f);
+    return buf;
+}
+
 int main(int argc, char** argv) {
     /* pull "--json-out PATH" out wherever it appears, then treat the rest positionally */
     char* json_out = NULL;
@@ -196,11 +264,11 @@ int main(int argc, char** argv) {
     }
 
     if (argn < 4) {
-        fprintf(stderr, "usage: %s <path-to-.so> {bench|csv|paced} <sim_time_s> <dt_s> "
+        fprintf(stderr, "usage: %s <extracted-fmu-dir> {bench|csv|paced} <sim_time_s> <dt_s> "
                         "[fifo priority] [--json-out PATH]\n", argv[0]);
         return 1;
     }
-    const char* so_path = args[0];
+    const char* fmu_dir = args[0];
     const char* mode = args[1];
     double sim_time = atof(args[2]);
     double dt = atof(args[3]);
@@ -223,10 +291,45 @@ int main(int argc, char** argv) {
         }
     }
 
+    char xml_path[1024];
+    snprintf(xml_path, sizeof(xml_path), "%s/modelDescription.xml", fmu_dir);
+    char* xml = read_whole_file(xml_path);
+    if (!xml) {
+        fprintf(stderr, "could not read %s (pass a directory with modelDescription.xml and "
+                        "binaries/linux64/ in it -- unzip a .fmu first if needed)\n", xml_path);
+        return 1;
+    }
+
+    char guid[128], model_id[128], vr_h_str[32], vr_v_str[32];
+    const char* cosim_tag = strstr(xml, "<CoSimulation");
+    const char* h_tag = strstr(xml, "name=\"h\"");
+    const char* v_tag = strstr(xml, "name=\"v\"");
+    if (!find_attr_value(xml, "guid", guid, sizeof(guid)) ||
+        !cosim_tag || !find_attr_value(cosim_tag, "modelIdentifier", model_id, sizeof(model_id)) ||
+        !h_tag || !find_attr_value(h_tag, "valueReference", vr_h_str, sizeof(vr_h_str)) ||
+        !v_tag || !find_attr_value(v_tag, "valueReference", vr_v_str, sizeof(vr_v_str))) {
+        fprintf(stderr, "could not parse guid/modelIdentifier/h/v out of %s -- this driver "
+                        "expects Real variables literally named 'h' and 'v'\n", xml_path);
+        free(xml);
+        return 1;
+    }
+    fmi2ValueReference vr_hv[2] = {(fmi2ValueReference)atoi(vr_h_str), (fmi2ValueReference)atoi(vr_v_str)};
+    free(xml);
+
+    char so_path[1024];
+    snprintf(so_path, sizeof(so_path), "%s/binaries/linux64/%s.so", fmu_dir, model_id);
+
     void* handle = dlopen(so_path, RTLD_NOW);
     if (!handle) {
         fprintf(stderr, "dlopen(%s) failed: %s\n", so_path, dlerror());
         return 1;
+    }
+    fprintf(stderr, "model: %s  guid=%s  h=vr%s v=vr%s\n", model_id, guid, vr_h_str, vr_v_str);
+
+    char abs_dir[PATH_MAX];
+    char resource_uri[PATH_MAX + 32] = "";
+    if (realpath(fmu_dir, abs_dir)) {
+        snprintf(resource_uri, sizeof(resource_uri), "file://%s/resources", abs_dir);
     }
 
     fmi2Instantiate_t fmi2Instantiate = (fmi2Instantiate_t)xdlsym(handle, "fmi2Instantiate");
@@ -241,7 +344,9 @@ int main(int argc, char** argv) {
     fmi2GetReal_t fmi2GetReal = (fmi2GetReal_t)xdlsym(handle, "fmi2GetReal");
     fmi2DoStep_t fmi2DoStep = (fmi2DoStep_t)xdlsym(handle, "fmi2DoStep");
 
-    fmi2Component c = fmi2Instantiate("fmu_driver_instance", fmi2CoSimulation, GUID, "", NULL, 0, 0);
+    fmi2CallbackFunctions callbacks = {fmu_logger, fmu_alloc, fmu_free, NULL, NULL};
+    fmi2Component c = fmi2Instantiate("fmu_driver_instance", fmi2CoSimulation, guid, resource_uri,
+                                       &callbacks, 0, 0);
     if (!c) {
         fprintf(stderr, "fmi2Instantiate returned NULL\n");
         return 1;
@@ -251,7 +356,6 @@ int main(int argc, char** argv) {
     fmi2ExitInitializationMode(c);
 
     long n_steps = (long)(sim_time / dt);
-    fmi2ValueReference vr_hv[2] = {VR_H, VR_V};
     fmi2Real hv[2];
 
     if (is_bench) {

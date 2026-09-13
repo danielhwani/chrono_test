@@ -244,8 +244,8 @@ cd fmu/cpp/native_fmu
 ./build.sh                          # 모델 .so + .fmu 빌드 (위와 동일)
 cd driver
 ./build.sh                          # 드라이버 빌드 (gcc + -ldl)
-./fmu_driver ../binaries/linux64/bouncing_ball_native.so bench 10 0.002   # 페이싱 없이 순수 구동 속도
-./fmu_driver ../binaries/linux64/bouncing_ball_native.so csv 3 0.002      # time,h,v CSV 출력 (물리 검증용)
+./fmu_driver .. bench 10 0.002   # 페이싱 없이 순수 구동 속도 (첫 인자는 압축 푼 FMU 디렉터리 -- native_fmu/ 자체가 그 레이아웃)
+./fmu_driver .. csv 3 0.002      # time,h,v CSV 출력 (물리 검증용)
 ```
 
 **완전 네이티브 경로(모델도 C, 드라이버도 C)의 속도**:
@@ -269,7 +269,7 @@ python fmu/benchmark_rt_jitter.py --fmu fmu/cpp/native_fmu/bouncing_ball_native.
 # C++: fmu_driver에 새로 추가한 paced 모드. bouncing_ball.cpp --paced와 동일한
 # yield() 기반 대기 + 퍼센타일 출력 + rt_results/*.json과 같은 스키마의 --json-out
 cd fmu/cpp/native_fmu/driver
-./fmu_driver ../binaries/linux64/bouncing_ball_native.so paced 60 0.002 --json-out ../../../rt_results/cpp-native-fmu-driver-60s.json
+./fmu_driver .. paced 60 0.002 --json-out ../../../rt_results/cpp-native-fmu-driver-60s.json
 ```
 
 **결과 (60초, n=30000, SCHED_OTHER) — "네이티브 FMU + 네이티브 드라이버" vs 기존 "FMU 없는 순수 C++/Python 페이싱 루프" 비교**:
@@ -282,6 +282,32 @@ cd fmu/cpp/native_fmu/driver
 | `cpp-native-fmu-driver-60s` (네이티브 FMU + `fmu_driver`) | 2000.0us | 2000.5us | 2000.7us | 2014.1us | 4714.6us |
 
 p50~p99까지는 FMU를 끼우든 안 끼우든, 언어가 Python이든 C++이든 사실상 동일함 — `--paced`/`paced` 루프의 페이싱 정밀도는 OS 스케줄러 레벨 현상이지 FMI 레이어나 언어가 좌우하는 게 아니라는, 앞의 결론(`### C++ 페이싱` 아래 결론과 SCHED_FIFO 재검증 결과)과 일관됨. p999/max의 산발적인 큰 값(4.6~4.7ms)은 이 머신이 격리 안 된 일반 데스크톱이라 다른 프로세스에 밀리는 드문 스톨로, run마다 위치만 다를 뿐 양쪽 다 비슷한 빈도로 나타남. `rt_comparison.png`를 다시 그리면(`python fmu/plot_rt_comparison.py`) 6개 결과 세트가 모두 겹쳐 보임.
+
+### 진짜 Modelica FMU를 `fmu_driver`로 구동 (fmu/modelica/)
+
+지금까지 `fmu_driver`가 구동한 FMU는 전부 이 레포에서 직접 만든 것(pythonfmu, 네이티브 C)이었음. 이번엔 반대로 **우리 것이 아닌, OpenModelica(`omc`)가 생성한 실제 FMU**를 그 위에 그대로 얹어봄 — 이 머신엔 OpenModelica 1.26.1이 이미 설치되어 있음(`omc --version`).
+
+`fmu/modelica/BouncingBallModelica.mo`에 다른 파일들과 동일한 물리(`g=-9.81, e=0.7, floor=0.0, h0=10.0, v0=0.0`)를 진짜 Modelica 하이브리드 모델로 작성함(`der(h)=v; der(v)=g; when h<=floor then reinit(...)`) — 우리 손으로 짠 explicit-Euler 적분기와 달리, OpenModelica의 기본 솔버가 바운스를 zero-crossing 이벤트로 정확히 잡아내는 게 차이점.
+
+```bash
+cd fmu/modelica
+./build.sh    # omc로 .fmu 빌드 + extracted/ 에 압축 풀어둠 (fmu_driver가 바로 쓸 수 있게)
+```
+
+**`fmu_driver` 자체를 일반화함**: 지금까지는 우리 모델의 GUID/value-reference(`VR_H=3` 등)가 코드에 하드코딩돼 있어서 다른 FMU엔 그대로 못 썼음. 이번에 `fmu_driver.c`가 실행 시점에 `modelDescription.xml`을 직접 읽어서 `guid`/`modelIdentifier`/`h`·`v`의 value reference를 알아내도록 고침 — 그래서 첫 인자가 `.so` 경로가 아니라 **압축 푼 FMU 디렉터리**(`modelDescription.xml` + `binaries/linux64/*.so`가 있는 곳)로 바뀜:
+
+```bash
+cd fmu/cpp/native_fmu/driver
+./build.sh
+./fmu_driver ..                              paced 10 0.002   # 우리 네이티브 FMU (native_fmu/ 자체가 이미 이 레이아웃)
+./fmu_driver ../../../modelica/extracted     paced 10 0.002   # 방금 만든 OpenModelica FMU -- 코드 수정 없이 그대로 됨
+```
+
+**디버깅 포인트 하나**: `omc`가 만든 FMU를 처음 돌렸더니 `fmi2Instantiate` 안에서 바로 세그폴트가 남. 원인은 우리 자체 FMU는 `fmi2CallbackFunctions*`가 `NULL`이어도 malloc으로 대체하도록 짜놨지만(편의상 봐준 것), OpenModelica가 생성한 FMU는 스펙대로 콜백이 항상 유효하다고 가정하고 인스턴스화 중에 바로 참조함 — `fmu_driver`가 `NULL`을 넘기고 있었던 게 문제. 실제 로거(`fmu_logger`)와 `calloc`/`free` 기반 `allocateMemory`/`freeMemory` 콜백을 채워 넣고, 리소스 위치도 `file://<절대경로>/resources` URI로 제대로 넘기도록 고치니 해결됨(fmpy는 원래 이걸 항상 제대로 넘겨주고 있어서 fmpy 쪽에서는 처음부터 문제없이 동작했음 — 그래서 세그폴트가 `fmu_driver`만의 문제라는 걸 fmpy 대조로 먼저 확인할 수 있었음).
+
+**검증**: 바닥 비침투(min h=0.0), 봉우리 감쇠 비율 0.494~0.497(외부 통신 스텝이 2ms라 피크를 정확히 못 찍어서 우리 모델의 0.4898~0.4900보다 살짝 느슨하지만 e²=0.49에 근접). `paced` 모드 페이싱 지터도 우리 모델과 같은 수준(p50/p95/p99 ≈ 2000.0/2000.5/2000.6us).
+
+**속도는 훨씬 느림**: `bench` 기준 이 Modelica FMU는 **~310 ns/step**(6,460x realtime) — 우리 네이티브 FMU의 2.4ns(826,000x)보다 100배 이상 느림. 물리는 스칼라 3개짜리로 똑같은데도 이런 차이가 나는 이유는, OpenModelica가 매 스텝 이벤트 감지(zero-crossing) + (지금은 안 쓰지만) 비선형 솔버 인프라까지 포함한 범용 시뮬레이션 런타임을 돌리기 때문 — 우리 손으로 짠 3줄짜리 `if (h<floor)` 체크와는 계산량 자체가 다름. 나중에 실제 차량처럼 무거운 모델이면 이 차이는 좁혀질 것으로 예상(고정비용 비중이 줄어드니까).
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

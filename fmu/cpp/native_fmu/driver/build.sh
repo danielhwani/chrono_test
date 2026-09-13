@@ -6,5 +6,6 @@ cd "$(dirname "$0")"
 
 gcc -O2 -o fmu_driver fmu_driver.c -ldl
 echo "Built fmu/cpp/native_fmu/driver/fmu_driver"
-echo "Run it against the model .so built by ../build.sh, e.g.:"
-echo "  ./fmu_driver ../binaries/linux64/bouncing_ball_native.so bench 10 0.002"
+echo "Point it at an *extracted* FMU directory (modelDescription.xml + binaries/linux64/*.so), e.g.:"
+echo "  ./fmu_driver .. bench 10 0.002                      # our own native_fmu/"
+echo "  ./fmu_driver ../../../modelica/extracted paced 10 0.002   # any FMU with Real h/v, e.g. Modelica-built"

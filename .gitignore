@@ -8,3 +8,10 @@ fmu/cpp/native_fmu/binaries/
 fmu/cpp/native_fmu/*.fmu
 fmu/cpp/native_fmu/driver/fmu_driver
 fmu/cpp/native_fmu/driver/*.csv
+fmu/modelica/*.fmu
+fmu/modelica/extracted/
+fmu/modelica/*.log
+fmu/modelica/*_FMU.libs
+fmu/modelica/*_FMU.makefile
+fmu/modelica/*_info.json
+fmu/modelica/index.html

@@ -1,0 +1,4 @@
+loadModel(Modelica); getErrorString();
+loadFile("BouncingBallModelica.mo"); getErrorString();
+buildModelFMU(BouncingBallModelica, version="2.0", fmuType="cs", platforms={"static"});
+getErrorString();
