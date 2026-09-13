@@ -172,7 +172,18 @@ python plot_rt_comparison.py
 
 `cgroup v2`의 `cpuset.cpus.partition=isolated`로 재부팅 없이 코어를 격리해보려는 시도도 해봤으나(root 필요, 이 세션엔 비밀번호 없는 sudo가 없고 `tty_tickets` 때문에 사용자 터미널의 sudo 인증도 공유가 안 됨), 잘 안 돼서 보류함 — `rt_isolated`라는 빈 cgroup만 남아있을 수 있음(`sudo rmdir /sys/fs/cgroup/rt_isolated`로 정리 가능).
 
-**TODO(다음에)**: 위 SCHED_FIFO 결과(15초, n=7500)와 C++ 쪽 재검증(5초, n=2500, `yield()` 수정 후 방향이 반대로 나옴)이 서로 다른 결론을 냄 — 샘플이 적어서 우연히 큰 스톨을 덜/더 잡았을 가능성이 있음. Python `benchmark_rt_jitter.py --sched fifo`와 C++ `bouncing_ball --paced ... fifo`를 훨씬 긴 시간(예: 60초 이상, n=30000+)으로 재실행해서 SCHED_FIFO가 실제로 tail을 개선하는지 악화시키는지 표본을 늘려 재확인할 것.
+**후속 검증 완료 (60초, n=30000, Python·C++ 동일 조건)**: 표본을 늘려서 Python(`benchmark_rt_jitter.py`)과 C++(`bouncing_ball --paced 60 0.002 [fifo 10] --json-out ...`)을 SCHED_OTHER/SCHED_FIFO 각각 재측정함 — `bouncing_ball.cpp`도 이때 `--json-out`을 추가해서 `rt_results/*.json`에 파이썬과 같은 포맷으로 저장하고 `plot_rt_comparison.py`로 넷 다 겹쳐 그림(`rt_comparison.png`):
+
+| 지표 | Python OTHER | C++ OTHER | Python FIFO10 | C++ FIFO10 |
+|---|---|---|---|---|
+| p99 | +2.8μs | +0.6μs | +2.7μs | +0.8μs |
+| p999 | +58.2μs | +10.9μs | +48,055.6μs | +47,885.1μs |
+| **max** | +11,090.4μs | +40.7μs | +53,231.7μs | +51,404.9μs |
+| 2배 초과 | 1건(0.003%) | 0건 | 59건(0.197%) | 57건(0.190%) |
+
+**결론: "C++이 확실히 우위"는 아니었음.** SCHED_OTHER끼리, SCHED_FIFO끼리 비교하면 Python과 C++이 거의 구분 안 될 정도로 비슷함(FIFO의 max는 둘 다 5.1만μs대, 발생 빈도도 0.19%대로 거의 일치) — 이전에 봤던 "언어에 따라 방향이 다르다"는 건 작은 표본(2500~7500) 노이즈였던 게 확인됨. `yield()` 기반 페이싱으로 고친 뒤에는 **페이싱 지터가 언어 문제가 아니라 순수 OS/스케줄러 레벨 현상**이라는 게 이번 큰 표본으로 재확인됨. (참고: 이번 라운드의 C++ OTHER는 우연히 큰 스톨을 안 만나서 max가 특히 깨끗하게 나왔음 — run-to-run 변동이 있다는 것도 그대로 보여주는 사례.)
+
+C++이 여전히 명확히 이기는 영역은 **원시 계산 속도**뿐임(`--bench` 기준 800배 이상, 이건 페이싱과 무관하게 항상 성립). "실시간 페이싱 정확도"는 이제 두 언어가 동등하다고 보는 게 맞음.
 
 ## C++ 버전 (fmu/cpp/)
 

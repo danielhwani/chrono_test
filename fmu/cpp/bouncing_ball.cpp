@@ -45,11 +45,18 @@
 #include <sched.h>
 #include <sys/utsname.h>
 
-// Prints the kernel this exact process is running under (not just what a
+struct RuntimeContext {
+    std::string kernel_release;
+    bool is_rt_kernel;
+    std::string policy_name;
+    int priority;
+};
+
+// Reads the kernel this exact process is running under (not just what a
 // separate `uname` in the shell reports) plus this process's own current
-// scheduling policy, so a run's console output is self-verifying instead
-// of having to trust a claim made outside the program.
-static void print_runtime_context() {
+// scheduling policy, so a run's output is self-verifying instead of having
+// to trust a claim made outside the program.
+static RuntimeContext get_runtime_context() {
     struct utsname u;
     uname(&u);
     FILE* f = fopen("/sys/kernel/realtime", "r");
@@ -66,8 +73,13 @@ static void print_runtime_context() {
         policy == SCHED_OTHER ? "SCHED_OTHER" : "unknown";
     struct sched_param sp;
     sched_getparam(0, &sp);
-    std::printf("kernel: %s %s  (PREEMPT_RT kernel: %s)  process sched: %s prio=%d\n",
-                u.sysname, u.release, is_rt_kernel ? "yes" : "no", policy_name, sp.sched_priority);
+    return RuntimeContext{u.release, is_rt_kernel, policy_name, sp.sched_priority};
+}
+
+static void print_runtime_context(const RuntimeContext& ctx) {
+    std::printf("kernel: Linux %s  (PREEMPT_RT kernel: %s)  process sched: %s prio=%d\n",
+                ctx.kernel_release.c_str(), ctx.is_rt_kernel ? "yes" : "no",
+                ctx.policy_name.c_str(), ctx.priority);
 }
 
 struct State {
@@ -122,9 +134,36 @@ static double percentile(std::vector<double>& sorted_vals, double p) {
     return sorted_vals[idx];
 }
 
-static void run_paced(double sim_time, double dt) {
+// Writes the same JSON schema as benchmark_rt_jitter.py's rt_results/*.json,
+// so plot_rt_comparison.py can overlay Python and C++ results together.
+static void write_json(const std::string& path, const std::string& kernel_label,
+                        bool is_rt_kernel, double step_size, long n_samples,
+                        double mean, std::vector<double>& sorted_periods,
+                        std::vector<double>& periods) {
+    FILE* f = fopen(path.c_str(), "w");
+    if (!f) {
+        std::perror(("could not open " + path + " for writing").c_str());
+        return;
+    }
+    fprintf(f, "{\"kernel\": \"%s\", \"is_realtime_kernel\": %s, \"step_size\": %.10f, "
+               "\"n_samples\": %ld, \"mean\": %.10f, \"min\": %.10f, \"max\": %.10f, "
+               "\"p50\": %.10f, \"p95\": %.10f, \"p99\": %.10f, \"p999\": %.10f, \"periods\": [",
+            kernel_label.c_str(), is_rt_kernel ? "true" : "false", step_size, n_samples,
+            mean, sorted_periods.front(), sorted_periods.back(),
+            percentile(sorted_periods, 0.50), percentile(sorted_periods, 0.95),
+            percentile(sorted_periods, 0.99), percentile(sorted_periods, 0.999));
+    for (size_t i = 0; i < periods.size(); ++i) {
+        fprintf(f, "%s%.10f", i == 0 ? "" : ", ", periods[i]);
+    }
+    fprintf(f, "]}\n");
+    fclose(f);
+    std::printf("  wrote %s\n", path.c_str());
+}
+
+static void run_paced(double sim_time, double dt, const std::string& json_out) {
     using clock = std::chrono::steady_clock;
-    print_runtime_context();
+    RuntimeContext ctx = get_runtime_context();
+    print_runtime_context(ctx);
     State s{10.0, 0.0};
     const double g = -9.81, e = 0.7, floor = 0.0;
     long n_steps = static_cast<long>(sim_time / dt);
@@ -181,17 +220,36 @@ static void run_paced(double sim_time, double dt) {
                 100.0 * n_over_2x / periods.size());
     std::printf("  (final state, to prevent the optimizer from discarding step(): h=%.6f v=%.6f)\n",
                 s.h, s.v);
+
+    if (!json_out.empty()) {
+        std::string label = "cpp-" + ctx.kernel_release;
+        if (ctx.policy_name == "SCHED_FIFO") {
+            label += "+FIFO" + std::to_string(ctx.priority);
+        }
+        write_json(json_out, label, ctx.is_rt_kernel, dt, n_steps, mean, sorted_periods, periods);
+    }
 }
 
 int main(int argc, char** argv) {
-    std::string mode = argc > 1 ? argv[1] : "--csv";
-    double sim_time = argc > 2 ? std::stod(argv[2]) : 8.0;
-    double dt = argc > 3 ? std::stod(argv[3]) : 0.002;
+    // pull out "--json-out PATH" wherever it appears, then treat the rest positionally
+    std::vector<std::string> args(argv + 1, argv + argc);
+    std::string json_out;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--json-out" && i + 1 < args.size()) {
+            json_out = args[i + 1];
+            args.erase(args.begin() + i, args.begin() + i + 2);
+            break;
+        }
+    }
+
+    std::string mode = args.size() > 0 ? args[0] : "--csv";
+    double sim_time = args.size() > 1 ? std::stod(args[1]) : 8.0;
+    double dt = args.size() > 2 ? std::stod(args[2]) : 0.002;
 
     // optional trailing "fifo <priority>" args (only meaningful with --paced),
     // e.g.: bouncing_ball --paced 10 0.002 fifo 10
-    if (argc > 4 && std::string(argv[4]) == "fifo") {
-        int prio = argc > 5 ? std::atoi(argv[5]) : 10;
+    if (args.size() > 3 && args[3] == "fifo") {
+        int prio = args.size() > 4 ? std::atoi(args[4].c_str()) : 10;
         struct sched_param sp;
         sp.sched_priority = prio;
         if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
@@ -206,9 +264,10 @@ int main(int argc, char** argv) {
     } else if (mode == "--bench") {
         run_bench(sim_time, dt);
     } else if (mode == "--paced") {
-        run_paced(sim_time, dt);
+        run_paced(sim_time, dt, json_out);
     } else {
-        std::fprintf(stderr, "usage: %s [--csv|--bench|--paced] [sim_time] [dt] [fifo priority]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--csv|--bench|--paced] [sim_time] [dt] [fifo priority] "
+                              "[--json-out PATH]\n", argv[0]);
         return 1;
     }
     return 0;
