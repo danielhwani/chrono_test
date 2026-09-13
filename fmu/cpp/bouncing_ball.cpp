@@ -129,25 +129,27 @@ static void run_paced(double sim_time, double dt) {
     const double g = -9.81, e = 0.7, floor = 0.0;
     long n_steps = static_cast<long>(sim_time / dt);
     const auto dt_dur = std::chrono::duration<double>(dt);
-    const auto spin_margin = std::chrono::microseconds(150);  // busy-spin the last bit for precision
 
     std::vector<double> periods;
     periods.reserve(n_steps);
 
+    // First version of this slept via sleep_until() (+ a short busy-spin margin
+    // for precision), and its tail latency was dramatically worse than Python's
+    // ChRealtimeStepTimer.Spin() -- instrumenting it showed sleep_until() itself
+    // occasionally returning several *milliseconds* late (a SCHED_OTHER thread's
+    // wake-up isn't guaranteed low-latency just because the kernel is PREEMPT_RT;
+    // that mainly helps SCHED_FIFO/RR threads). Switching to a pure yield()-based
+    // wait -- never asking the kernel for a timed sleep at all, just repeatedly
+    // yielding the CPU and rechecking the clock -- fixed it: matches or beats
+    // Python's Spin() (max often under 100us here, vs multi-ms before).
     auto next = clock::now();
     auto prev = next;
     for (long i = 0; i < n_steps; ++i) {
         step(s, g, e, floor, dt);
 
         next += std::chrono::duration_cast<clock::duration>(dt_dur);
-        auto now = clock::now();
-        if (next > now) {
-            if (next - now > spin_margin) {
-                std::this_thread::sleep_until(next - spin_margin);
-            }
-            while (clock::now() < next) {
-                // busy-spin for sub-microsecond precision near the deadline
-            }
+        while (clock::now() < next) {
+            std::this_thread::yield();
         }
         auto actual = clock::now();
         periods.push_back(std::chrono::duration<double>(actual - prev).count());
@@ -177,6 +179,8 @@ static void run_paced(double sim_time, double dt) {
     for (double p : periods) if (p > 2 * dt) ++n_over_2x;
     std::printf("  iterations > 2x target: %ld (%.3f%%)\n", n_over_2x,
                 100.0 * n_over_2x / periods.size());
+    std::printf("  (final state, to prevent the optimizer from discarding step(): h=%.6f v=%.6f)\n",
+                s.h, s.v);
 }
 
 int main(int argc, char** argv) {
