@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .*.swp
 fmu/build/
+fmu/cpp/bouncing_ball

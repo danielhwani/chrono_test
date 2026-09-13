@@ -170,4 +170,29 @@ python plot_rt_comparison.py
 
 평상시(p50~p95)는 SCHED_FIFO가 오히려 살짝 더 좋아지는데, **최악의 경우(tail)는 30배 가까이 나빠짐**. 이 머신이 GNOME Shell·브라우저 등이 같이 떠 있는 일반 데스크톱이라(격리된 RT 전용 머신이 아님), 우선순위 10 정도로는 시스템의 다른 스레드와 충돌해서 드물게 큰 스톨이 생기는 것으로 보임(정확한 커널 레벨 원인은 미확인 — 우선순위 역전, 메모리 할당/GC 중 발생한 페이지 폴트가 더 급한 커널 스레드에 밀리는 경우 등을 의심 중). 실제 RT 배포에서 `isolcpus`/`taskset`으로 코어를 격리하고 커널 스레드 우선순위까지 같이 신경 쓰는 이유가 이런 것 — 프로세스만 SCHED_FIFO로 올린다고 공짜로 좋아지는 게 아님.
 
+`cgroup v2`의 `cpuset.cpus.partition=isolated`로 재부팅 없이 코어를 격리해보려는 시도도 해봤으나(root 필요, 이 세션엔 비밀번호 없는 sudo가 없고 `tty_tickets` 때문에 사용자 터미널의 sudo 인증도 공유가 안 됨), 잘 안 돼서 보류함 — `rt_isolated`라는 빈 cgroup만 남아있을 수 있음(`sudo rmdir /sys/fs/cgroup/rt_isolated`로 정리 가능).
+
+## C++ 버전 (fmu/cpp/)
+
+같은 바운싱볼 모델을 **의존성 없는 순수 C++**로도 포팅함 — Python 버전(`bouncing_ball_fmu.py`)의 물리 로직 자체가 애초에 PyChrono 없이 스칼라 수식(중력 적분 + 바닥 반사)뿐이었어서, C++ 이식도 Chrono 없이 가능함. FMU로 감싸서 구동 측까지 C++로 가는 것(실시간성 향상이 목적)의 첫 단계 — 렌더링은 Chrono/Irrlicht C++ 라이브러리를 별도로 빌드해야 해서(`chrono_fmi`와 같은 장벽) 현재는 보류.
+
+```bash
+cd fmu/cpp
+g++ -O2 -o bouncing_ball bouncing_ball.cpp
+./bouncing_ball --csv 8.0 0.002      # time,h,v를 stdout에 CSV로 출력
+./bouncing_ball --bench 5.0 0.002    # 순수 계산 속도 벤치마크
+```
+**검증**: 바닥 비침투(min h=0.0), 봉우리 높이 감쇠 비율 0.485~0.488 (Python과 동일하게 e²=0.49에 근접) — 물리적으로 Python 버전과 일치.
+
+**속도 비교** (5초 시뮬레이션, dt=2ms):
+
+| 구현 | 스텝당 시간 | 실시간 배율(RTF) |
+|---|---|---|
+| Python (fmpy로 FMU 구동) | ~1,900~4,000 ns | 394x |
+| 순수 C++ (의존성 없음) | **2.38 ns** | **840,336x** |
+
+**800~1600배 차이.** Python 경로는 fmpy의 ctypes 마샬링 오버헤드 + pythonfmu로 빌드된 FMU가 내부적으로 Python 인터프리터를 다시 호출하는 이중 비용이 있는데, 순수 C++엔 둘 다 없음. 지금은 모델이 스칼라 연산 3개뿐이라 이 정도 배율까지 나온 거고, 나중에 실제 차량처럼 무거운 모델이면 절대 격차는 커지되 RTF 배율 차이는 좁혀질 것.
+
+**다음 단계(미착수)**: FMI2 C API를 직접 구현해서 진짜 네이티브 C++ FMU로 패키징하고, 구동 측도 C++(또는 fmpy가 아닌 C 드라이버)로 — Python이 전혀 안 끼는 완전한 경로를 만드는 것.
+
 트레이드오프: 이 분리는 ROS2/Simulink 등 외부 툴과 실제로 연동할 때 값어치가 있고, 계속 이 레포 안에서만 쓸 거면 지금 구조 대비 초기 비용이 큼.
