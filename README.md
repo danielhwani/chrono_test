@@ -413,7 +413,13 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 \
   OMSimulator --mode=cs --startTime=0 --stopTime=8 --stepSize=0.002 --resultFile=result.csv bouncing_ball_native_chrono.fmu
 ```
 
-**결과**: `exit 0`, `result.csv`에 정상적인 바운스 궤적(바닥 비침투, t≈6.8s 근처에 정지)이 그대로 찍힘. 즉 이번 세션에서 계속 파고든 질문 — "Chrono로 만든 slave를 Modelica GUI가 master로 불러올 수 있나?" — 에 대한 최종 답은 **"된다, 단 (a) Python을 거치지 않는 진짜 네이티브 FMU여야 하고 (b) conda와 시스템의 `libstdc++` 버전 차이를 `LD_PRELOAD`로 맞춰줘야 한다"**.
+**결과**: `exit 0`, `result.csv`에 정상적인 바운스 궤적(바닥 비침투, t≈6.8s 근처에 정지)이 그대로 찍힘. 즉 이번 세션에서 계속 파고든 질문 — "Chrono로 만든 slave를 Modelica가 master로 불러올 수 있나?" — 에 대한 답은 **"CLI(`OMSimulator`)로는 된다, 단 (a) Python을 거치지 않는 진짜 네이티브 FMU여야 하고 (b) conda와 시스템의 `libstdc++` 버전 차이를 `LD_PRELOAD`로 맞춰줘야 한다"**.
+
+**OMEdit GUI로는 안 됨 (이 버전은)** — 실제로 화면에 띄워서 시도해봄. `SSP` 메뉴로 새 SSP 모델(`ChronoBB` / `Root`)을 만들고, `bouncing_ball_native_chrono.fmu`를 두 가지 다른 방법으로 넣어봤는데 **둘 다 같은 에러**로 막힘:
+- Root(System)에 FMU를 직접 연결
+- 다이어그램 캔버스 우클릭 → "Add Submodel"(SSP 용어로 FMU 하나 = Component/Submodel)
+
+두 경우 다 `Messages` 패널에 `[NewComponent] FMU "bouncing_ball_native_chrono" doesn't support model exchange mode.` / `Only FMI 2.0 ModelExchange is supported.` — 이건 앞서 CLI에서 `omc`의 `importFMU()`를 직접 불렀을 때 나온 에러와 **글자 그대로 동일**함. 즉 System으로 넣든 Submodel로 넣든, OMEdit 1.26.1의 SSP GUI는 FMU를 추가할 때 내부적으로 항상 이 ME 전용 `importFMU()`/`NewComponent` 경로를 거치는 것으로 보임 — CS FMU를 실제로 실행하는 `OMSimulator` 엔진 자체는 멀쩡한데(바로 위에서 CLI로 검증), 그 엔진을 감싼 GUI 쪽의 FMU-추가 기능이 이 버전에서는 CS 전용 FMU를 못 받아들이는 것. 버전 한계/버그로 보이며, 더 시도해볼 만한 GUI 경로는 없어서 여기서 마무리 — **헤드리스 `OMSimulator` CLI가 현재 유일하게 검증된 경로**.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
