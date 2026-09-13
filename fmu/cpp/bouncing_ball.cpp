@@ -17,6 +17,12 @@
 //                                            (like benchmark_rt_jitter.py's Spin()
 //                                            loop, not benchmark_realtime.py's RTF)
 //                                            -- reports per-step period percentiles
+//                                            -- prints the actual running kernel +
+//                                            PREEMPT_RT status + this process's own
+//                                            scheduling policy before it starts
+//   bouncing_ball --paced [sim_time] [dt] fifo [priority]
+//                                            same, but elevate to SCHED_FIFO first
+//                                            (needs root or an rtprio ulimit)
 //
 // --bench (and plain --csv) run flat-out with no synchronization to wall-clock
 // time at all -- useful for "how much compute headroom is there" but NOT a
@@ -35,6 +41,34 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <sched.h>
+#include <sys/utsname.h>
+
+// Prints the kernel this exact process is running under (not just what a
+// separate `uname` in the shell reports) plus this process's own current
+// scheduling policy, so a run's console output is self-verifying instead
+// of having to trust a claim made outside the program.
+static void print_runtime_context() {
+    struct utsname u;
+    uname(&u);
+    FILE* f = fopen("/sys/kernel/realtime", "r");
+    bool is_rt_kernel = false;
+    if (f) {
+        int val = 0;
+        if (fscanf(f, "%d", &val) == 1) is_rt_kernel = (val == 1);
+        fclose(f);
+    }
+    int policy = sched_getscheduler(0);
+    const char* policy_name =
+        policy == SCHED_FIFO ? "SCHED_FIFO" :
+        policy == SCHED_RR ? "SCHED_RR" :
+        policy == SCHED_OTHER ? "SCHED_OTHER" : "unknown";
+    struct sched_param sp;
+    sched_getparam(0, &sp);
+    std::printf("kernel: %s %s  (PREEMPT_RT kernel: %s)  process sched: %s prio=%d\n",
+                u.sysname, u.release, is_rt_kernel ? "yes" : "no", policy_name, sp.sched_priority);
+}
 
 struct State {
     double h;
@@ -90,6 +124,7 @@ static double percentile(std::vector<double>& sorted_vals, double p) {
 
 static void run_paced(double sim_time, double dt) {
     using clock = std::chrono::steady_clock;
+    print_runtime_context();
     State s{10.0, 0.0};
     const double g = -9.81, e = 0.7, floor = 0.0;
     long n_steps = static_cast<long>(sim_time / dt);
@@ -149,6 +184,19 @@ int main(int argc, char** argv) {
     double sim_time = argc > 2 ? std::stod(argv[2]) : 8.0;
     double dt = argc > 3 ? std::stod(argv[3]) : 0.002;
 
+    // optional trailing "fifo <priority>" args (only meaningful with --paced),
+    // e.g.: bouncing_ball --paced 10 0.002 fifo 10
+    if (argc > 4 && std::string(argv[4]) == "fifo") {
+        int prio = argc > 5 ? std::atoi(argv[5]) : 10;
+        struct sched_param sp;
+        sp.sched_priority = prio;
+        if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+            std::perror("sched_setscheduler(SCHED_FIFO) failed "
+                        "(needs root, or an rtprio ulimit -- check: ulimit -r)");
+            return 1;
+        }
+    }
+
     if (mode == "--csv") {
         run_csv(sim_time, dt);
     } else if (mode == "--bench") {
@@ -156,7 +204,7 @@ int main(int argc, char** argv) {
     } else if (mode == "--paced") {
         run_paced(sim_time, dt);
     } else {
-        std::fprintf(stderr, "usage: %s [--csv|--bench|--paced] [sim_time] [dt]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--csv|--bench|--paced] [sim_time] [dt] [fifo priority]\n", argv[0]);
         return 1;
     }
     return 0;

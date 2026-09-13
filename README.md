@@ -214,4 +214,14 @@ g++ -O2 -o bouncing_ball bouncing_ball.cpp
 
 **교훈**: 원시 연산 속도(언어/컴파일 여부)와 실시간 페이싱 품질은 별개의 문제임. 잘 튜닝된 라이브러리의 페이싱 알고리즘이, 훨씬 빠른 언어로 대충 짠 페이싱보다 나을 수 있음 — "C++이니까 당연히 더 실시간에 유리하다"는 가정이 이번 테스트에선 틀렸음.
 
+**C++도 진짜 RT 커널 위에서 도는지 자체 검증**: `--paced` 실행 시 프로그램이 시작할 때 `uname()`과 `/sys/kernel/realtime`을 직접 읽어서 자기 자신이 어떤 커널·스케줄링 정책으로 돌고 있는지 스스로 찍음(외부에서 추측하는 게 아니라 프로세스 본인이 확인):
+```
+kernel: Linux 5.15.0-1112-realtime  (PREEMPT_RT kernel: yes)  process sched: SCHED_OTHER prio=0
+```
+`fifo <priority>` 인자를 추가하면 C++에서도 `sched_setscheduler(SCHED_FIFO)`를 걸 수 있음(파이썬 `--sched fifo`와 동일한 개념):
+```bash
+./bouncing_ball --paced 5.0 0.002 fifo 10
+```
+이번엔 Python 때와 달리 **SCHED_FIFO가 오히려 개선됨** (max +4,553.9μs → +1,073.6μs, 2배 초과 5건 → 0건) — Python 테스트 때는 FIFO가 훨씬 나빠졌던 것과 반대 방향. 표본 수가 적어서(2500 vs 7500스텝) 우연히 큰 스톨을 덜 잡았을 가능성이 있어 단정할 수 없음 — 결론 내리려면 더 긴 샘플로 재확인 필요.
+
 트레이드오프: 이 분리는 ROS2/Simulink 등 외부 툴과 실제로 연동할 때 값어치가 있고, 계속 이 레포 안에서만 쓸 거면 지금 구조 대비 초기 비용이 큼.
