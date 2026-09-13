@@ -172,6 +172,8 @@ python plot_rt_comparison.py
 
 `cgroup v2`의 `cpuset.cpus.partition=isolated`로 재부팅 없이 코어를 격리해보려는 시도도 해봤으나(root 필요, 이 세션엔 비밀번호 없는 sudo가 없고 `tty_tickets` 때문에 사용자 터미널의 sudo 인증도 공유가 안 됨), 잘 안 돼서 보류함 — `rt_isolated`라는 빈 cgroup만 남아있을 수 있음(`sudo rmdir /sys/fs/cgroup/rt_isolated`로 정리 가능).
 
+**TODO(다음에)**: 위 SCHED_FIFO 결과(15초, n=7500)와 C++ 쪽 재검증(5초, n=2500, `yield()` 수정 후 방향이 반대로 나옴)이 서로 다른 결론을 냄 — 샘플이 적어서 우연히 큰 스톨을 덜/더 잡았을 가능성이 있음. Python `benchmark_rt_jitter.py --sched fifo`와 C++ `bouncing_ball --paced ... fifo`를 훨씬 긴 시간(예: 60초 이상, n=30000+)으로 재실행해서 SCHED_FIFO가 실제로 tail을 개선하는지 악화시키는지 표본을 늘려 재확인할 것.
+
 ## C++ 버전 (fmu/cpp/)
 
 같은 바운싱볼 모델을 **의존성 없는 순수 C++**로도 포팅함 — Python 버전(`bouncing_ball_fmu.py`)의 물리 로직 자체가 애초에 PyChrono 없이 스칼라 수식(중력 적분 + 바닥 반사)뿐이었어서, C++ 이식도 Chrono 없이 가능함. FMU로 감싸서 구동 측까지 C++로 가는 것(실시간성 향상이 목적)의 첫 단계 — 렌더링은 Chrono/Irrlicht C++ 라이브러리를 별도로 빌드해야 해서(`chrono_fmi`와 같은 장벽) 현재는 보류.
