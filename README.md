@@ -370,6 +370,51 @@ OMSimulator --mode=cs --startTime=0 --stopTime=8 --stepSize=0.002 --resultFile=r
 
 **바로 성공함** — 에러 없이 끝까지 돌고(`exit 0`), `result.csv`에 바닥 비침투 + 정상적인 바운스 감쇠가 그대로 찍힘. 즉 `OMSimulator`가 CS FMU 자체를 못 다루는 게 아니라(그런 거였으면 이것도 실패했어야 함), 딱 **pythonfmu가 만드는 `.so`의 "이미 Python 프로세스 안에서 dlopen될 것"이라는 전제 하나만** 걸림돌이었다는 게 대조 실험으로 확인됨. `fmu/cpp/native_fmu/`가 Chrono 대신 손물리를 쓰고 있다는 것만 빼면, "C/C++ 네이티브 FMU면 Modelica master가 코드 수정 없이 그대로 불러온다"는 걸 이미 실증한 셈 — 남은 건 그 안의 물리를 우리 손 코드에서 실제 `ChSystemNSC` 호출로 바꾸는 것뿐.
 
+### 완성: 네이티브 FMU 안에서 진짜 ChSystemNSC 호출 (fmu/cpp/native_fmu/sources/bouncing_ball_native_chrono.cpp)
+
+바로 위에서 예고한 마지막 조각. **기존 `bouncing_ball_native.c`(손물리)는 전혀 건드리지 않고**, 완전히 새 소스 파일 하나를 옆에 추가하는 방식으로 함 — 파일/모델 자체를 버전업하지 않고 애초에 별도 아티팩트로 만들어서, 기존 것과 새 것을 둘 다 계속 쓸 수 있게:
+
+| | 기존 | 신규 |
+|---|---|---|
+| 소스 | `sources/bouncing_ball_native.c` | `sources/bouncing_ball_native_chrono.cpp` |
+| 빌드 스크립트 | `./build.sh` | `./build_chrono.sh` |
+| 산출물 레이아웃 | `native_fmu/` 자체 (`modelDescription.xml` + `binaries/linux64/bouncing_ball_native.so`) | `chrono_variant/` (`modelDescription.xml` + `binaries/linux64/bouncing_ball_native_chrono.so`) |
+| `.fmu` | `bouncing_ball_native.fmu` | `bouncing_ball_native_chrono.fmu` |
+| 물리 | 손으로 짠 3줄 Euler | 진짜 `chrono::ChSystemNSC` (구체+바닥, Bullet 충돌, NSC restitution) |
+
+둘 다 같은 `fmu_driver`로, 디렉터리만 바꿔서 그대로 구동됨(`./fmu_driver .. ...` vs `./fmu_driver ../chrono_variant ...`) — 기존 것도 지금까지처럼 계속 동작.
+
+**Chrono를 순수 C++에서 링크할 수 있었던 이유**: `pychrono`를 설치한 conda `chrono` 환경 안에 Python 바인딩(`site-packages/pychrono/*.so`)뿐 아니라 **Chrono 자체의 C++ 헤더(`envs/chrono/include/chrono/`)와 공유 라이브러리(`envs/chrono/lib/libChrono_core.so`)가 이미 통째로 들어 있었음** — 그래서 README 앞부분에서 "Chrono를 C++ 소스에서 새로 빌드해야 함"이라고 적었던 게 실제로는 필요 없었음, conda 패키지 안에 이미 있었던 것. `libChrono_core.so`는 Bullet까지 정적으로 포함하고 있어서 별도 collision 라이브러리 링크도 불필요.
+
+```bash
+cd fmu/cpp/native_fmu
+CHRONO_ENV=~/miniconda3/envs/chrono ./build_chrono.sh   # 기본값도 이 경로라 보통은 인자 없이 됨
+cd driver
+./fmu_driver ../chrono_variant bench 5 0.002    # 순수 구동 속도
+./fmu_driver ../chrono_variant csv 8 0.002      # 바운스 궤적
+./fmu_driver ../chrono_variant paced 10 0.002   # 실시간 페이싱
+```
+
+**빌드 중 걸린 것들**(전부 include 경로 문제, 코드 문제 아님): Eigen(`envs/chrono/include/eigen3`)과 Chrono가 내장한 Bullet(`envs/chrono/include/chrono/collision/bullet` — 이 안의 헤더들이 `"LinearMath/..."`처럼 그 디렉터리 기준 상대경로로 서로를 include해서, 이 디렉터리 자체를 `-I`에 추가해야 함)이 안 잡혀서 두 번 더 `-I`를 추가함.
+
+**속도**: `bench` 기준 **~2,242 ns/step**(892x realtime) — pythonfmu 버전(Python 오버헤드)보다야 당연히 빠르지만, 손물리 버전의 2.4ns보다는 훨씬 느림(실제 강체 동역학 + Bullet 충돌 검사를 매 스텝 도니까 당연함). 그래도 2ms 스텝 목표 대비 2.2μs는 여유가 1000배 가까이 남아서, `paced` 모드 지터는 다른 FMU들과 다를 바 없이 깨끗함(p50/p95/p99 ≈ 2000.0/2000.5/2000.6us).
+
+**`OMSimulator`로 실제로 불러와서 돌림 — 이번엔 진짜 Chrono가 Modelica master의 slave로 동작함:**
+
+```bash
+cd fmu/cpp/native_fmu
+OMSimulator --mode=cs --startTime=0 --stopTime=8 --stepSize=0.002 --resultFile=result.csv bouncing_ball_native_chrono.fmu
+```
+
+**처음엔 또 다른 이유로 막힘**: `undefined symbol: CXXABI_1.3.15`(`libstdc++.so.6`) — `OMSimulator`는 시스템 `libstdc++`(오래됨)에 링크된 바이너리인데, `libChrono_core.so`는 conda의 최신 `libstdc++`가 필요함. 문제는 `OMSimulator` 프로세스가 시작하면서 자기 자신의 의존성으로 시스템 `libstdc++.so.6`을 먼저 로드해버리면, 우리 `.so`가 나중에 같은 soname(`libstdc++.so.6`)을 요구해도 (우리 `.so`에 박아둔 RPATH와 무관하게) 리눅스 동적 로더가 "이미 로드된 것"을 그대로 재사용해버림 — 그래서 RPATH가 있어도 무시되고 구버전으로 해석됨. **`LD_PRELOAD`로 conda의 `libstdc++.so.6`을 먼저(=OMSimulator 자신의 의존성 해석보다 먼저) 얹어서 해결**:
+
+```bash
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 \
+  OMSimulator --mode=cs --startTime=0 --stopTime=8 --stepSize=0.002 --resultFile=result.csv bouncing_ball_native_chrono.fmu
+```
+
+**결과**: `exit 0`, `result.csv`에 정상적인 바운스 궤적(바닥 비침투, t≈6.8s 근처에 정지)이 그대로 찍힘. 즉 이번 세션에서 계속 파고든 질문 — "Chrono로 만든 slave를 Modelica GUI가 master로 불러올 수 있나?" — 에 대한 최종 답은 **"된다, 단 (a) Python을 거치지 않는 진짜 네이티브 FMU여야 하고 (b) conda와 시스템의 `libstdc++` 버전 차이를 `LD_PRELOAD`로 맞춰줘야 한다"**.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
