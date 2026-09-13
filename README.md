@@ -309,6 +309,34 @@ cd fmu/cpp/native_fmu/driver
 
 **속도는 훨씬 느림**: `bench` 기준 이 Modelica FMU는 **~310 ns/step**(6,460x realtime) — 우리 네이티브 FMU의 2.4ns(826,000x)보다 100배 이상 느림. 물리는 스칼라 3개짜리로 똑같은데도 이런 차이가 나는 이유는, OpenModelica가 매 스텝 이벤트 감지(zero-crossing) + (지금은 안 쓰지만) 비선형 솔버 인프라까지 포함한 범용 시뮬레이션 런타임을 돌리기 때문 — 우리 손으로 짠 3줄짜리 `if (h<floor)` 체크와는 계산량 자체가 다름. 나중에 실제 차량처럼 무거운 모델이면 이 차이는 좁혀질 것으로 예상(고정비용 비중이 줄어드니까).
 
+**일반 터미널에서 테스트하려면**:
+
+```bash
+cd ~/chrono_test
+
+# 1) Modelica FMU 빌드 (OpenModelica omc 필요 -- 이미 설치돼 있음: omc --version)
+cd fmu/modelica
+./build.sh                   # BouncingBallModelica.fmu 빌드 + extracted/ 에 압축 풀기
+
+# 2) C 드라이버 빌드 (아직 안 했으면 -- 우리 네이티브 FMU도 같이)
+cd ../cpp/native_fmu
+./build.sh
+cd driver
+./build.sh
+
+# 3) 같은 드라이버로 둘 다 구동 -- 코드 수정 없이 디렉터리만 바꿔서
+./fmu_driver .. bench 5 0.002                              # 우리 네이티브 FMU
+./fmu_driver ../../../modelica/extracted bench 5 0.002     # OpenModelica FMU
+
+# 4) 물리 검증 (CSV로 바운스 확인)
+./fmu_driver ../../../modelica/extracted csv 8 0.002 2>/dev/null | head -5
+
+# 5) 페이싱(실시간) 모드
+./fmu_driver ../../../modelica/extracted paced 10 0.002
+```
+
+3번에서 두 FMU 모두 시작할 때 `model: <이름> guid=... h=vr.. v=vr..` 한 줄이 stderr로 찍힘 — 드라이버가 `modelDescription.xml`을 읽어서 실제로 다른 GUID/value-reference를 알아냈다는 증거. Python(fmpy) 쪽으로 대조 검증하려면(`conda activate chrono` 필요): `python fmu/benchmark_rt_jitter.py --fmu fmu/modelica/BouncingBallModelica.fmu --sim-time 10 --label modelica-py-test`.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
