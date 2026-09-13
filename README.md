@@ -361,6 +361,15 @@ fmpy로 구동해보면 물리 자체는 정상(바닥 비침투, 바운스마�
 
 **결론**: Chrono 물리를 담은 FMU를 Modelica GUI가 master로 불러오려면, 지금처럼 `pythonfmu`로 Python을 통해 감싸는 방식이 아니라 **C/C++에서 직접 Chrono API를 호출하는 네이티브 FMU**(`fmu/cpp/native_fmu/`가 손물리 대신 실제 `ChSystemNSC` 호출을 하도록 만든 버전)가 필요함 — 이게 바로 README 앞부분에서 언급한, conda `pychrono` 빌드엔 없어서 보류해둔 `chrono_fmi`(Chrono 공식 C++ FMU export 모듈) 경로와 같은 결론으로 다시 수렴함. 즉 "Python으로 감싼 Chrono"는 Python 쪽 master(fmpy 등)까지만 통하고, "진짜 언어 무관 FMU"가 되려면 결국 Chrono를 C++ 소스에서 직접 빌드해야 함.
 
+**검증**: 위 결론이 정말 "Python이 문제였다"인지, 아니면 OMSimulator/FMI 조합 자체가 우리 FMU와 안 맞는 건지 구분하기 위해, **이미 갖고 있던 Python-무관 FMU**(`fmu/cpp/native_fmu/bouncing_ball_native.fmu` — 손으로 짠 C 물리라 Chrono는 아니지만, `ldd`로 확인했듯 `libc.so.6`만 링크된 완전히 독립적인 `.so`)를 그대로 `OMSimulator`에 넣어봄:
+
+```bash
+cd fmu/cpp/native_fmu
+OMSimulator --mode=cs --startTime=0 --stopTime=8 --stepSize=0.002 --resultFile=result.csv bouncing_ball_native.fmu
+```
+
+**바로 성공함** — 에러 없이 끝까지 돌고(`exit 0`), `result.csv`에 바닥 비침투 + 정상적인 바운스 감쇠가 그대로 찍힘. 즉 `OMSimulator`가 CS FMU 자체를 못 다루는 게 아니라(그런 거였으면 이것도 실패했어야 함), 딱 **pythonfmu가 만드는 `.so`의 "이미 Python 프로세스 안에서 dlopen될 것"이라는 전제 하나만** 걸림돌이었다는 게 대조 실험으로 확인됨. `fmu/cpp/native_fmu/`가 Chrono 대신 손물리를 쓰고 있다는 것만 빼면, "C/C++ 네이티브 FMU면 Modelica master가 코드 수정 없이 그대로 불러온다"는 걸 이미 실증한 셈 — 남은 건 그 안의 물리를 우리 손 코드에서 실제 `ChSystemNSC` 호출로 바꾸는 것뿐.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
