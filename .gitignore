@@ -6,3 +6,5 @@ fmu/cpp/bouncing_ball
 fmu/cpp/*.csv
 fmu/cpp/native_fmu/binaries/
 fmu/cpp/native_fmu/*.fmu
+fmu/cpp/native_fmu/driver/fmu_driver
+fmu/cpp/native_fmu/driver/*.csv

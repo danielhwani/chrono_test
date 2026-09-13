@@ -229,7 +229,35 @@ python validate_native_fmu.py # fmpy로 로드+시뮬레이션, 바닥 비침투
 
 드라이버(fmpy/ctypes)는 양쪽 다 Python이라 그 오버헤드는 그대로 남아있는데도 약 1.6배 빨라짐 — 이게 "FMU 내부 구현이 Python이냐 아니냐"가 기여하는 몫이고, 순수 C++ `bouncing_ball --bench`의 800배와의 나머지 격차(대략 500배)는 드라이버 쪽(fmpy/ctypes) 오버헤드로 추정됨.
 
-**다음 단계(미착수)**: 구동 측도 fmpy가 아닌 C++(또는 C) 드라이버로 — `dlopen`으로 이 `.so`를 직접 로드해서 `fmi2DoStep` 등을 호출하면, Python이 전혀 안 끼는 완전한 경로가 완성됨. 그러면 드라이버 오버헤드까지 제거됐을 때 순수 C++ `--bench`의 800배에 얼마나 가까워지는지 확인 가능.
+**네이티브 드라이버 (`fmu/cpp/native_fmu/driver/`) — 구동 측도 Python 배제**: `dlopen`/`dlsym`으로 `.so`를 직접 로드해서 `fmi2Instantiate`/`fmi2DoStep`/`fmi2GetReal` 등을 호출하는 C 프로그램. fmpy가 하던 역할(모델 로드, 스텝 구동, 값 읽기)을 그대로 하지만 프로세스 안에 Python 인터프리터가 아예 없음.
+
+이 레포의 비슷하게 생긴 세 파일이 각각 다른 역할이라 헷갈리지 않게 정리:
+
+| 파일 | 역할 |
+|---|---|
+| `fmu/cpp/bouncing_ball.cpp` (→ `bouncing_ball`) | FMI 자체를 안 씀. 순수 C++ 물리 계산만 — 위 "속도 비교" 표의 성능 상한선(ceiling) 역할 |
+| `fmu/cpp/native_fmu/sources/bouncing_ball_native.c` (→ `.so`/`.fmu`) | FMI2 C API를 구현한 **모델 자체**. 혼자 실행 안 되고 반드시 드라이버가 로드해서 호출해야 함 |
+| `fmu/cpp/native_fmu/driver/fmu_driver.c` (→ `fmu_driver`) | 그 `.so`를 `dlopen`으로 불러 구동하는 **드라이버**. `validate_native_fmu.py`/`benchmark_realtime.py`의 fmpy 역할을 C로 대체 |
+
+```bash
+cd fmu/cpp/native_fmu
+./build.sh                          # 모델 .so + .fmu 빌드 (위와 동일)
+cd driver
+./build.sh                          # 드라이버 빌드 (gcc + -ldl)
+./fmu_driver ../binaries/linux64/bouncing_ball_native.so bench 10 0.002   # 페이싱 없이 순수 구동 속도
+./fmu_driver ../binaries/linux64/bouncing_ball_native.so csv 3 0.002      # time,h,v CSV 출력 (물리 검증용)
+```
+
+**완전 네이티브 경로(모델도 C, 드라이버도 C)의 속도**:
+
+| 경로 | 스텝당 시간 | RTF |
+|---|---|---|
+| pythonfmu 모델 + fmpy 드라이버 | 4,367.1 ns | 458x |
+| 네이티브 C 모델 + fmpy 드라이버 (Python 드라이버 오버헤드 남음) | 2,685.9 ns | 744.6x |
+| **네이티브 C 모델 + `fmu_driver`(C, dlopen)** | **3.67 ns** | **545,613x** |
+| 순수 C++ (FMI 레이어 자체가 없음, 상한선) | 2.38 ns | 840,336x |
+
+Python을 fmpy 드라이버에서 C `dlopen` 드라이버로 바꾸는 것만으로 2,685.9ns → 3.67ns, 약 730배 빨라짐 — 격차의 대부분이 "FMU 내부 구현이 Python이냐"가 아니라 "구동 측(driver)이 Python/ctypes냐"였다는 뜻. 완전 네이티브 경로는 이제 순수 C++ 상한선의 1.5배 이내(FMI 함수 포인터 호출 몇 개의 오버헤드)까지 근접.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
