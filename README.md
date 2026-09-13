@@ -337,6 +337,30 @@ cd driver
 
 3번에서 두 FMU 모두 시작할 때 `model: <이름> guid=... h=vr.. v=vr..` 한 줄이 stderr로 찍힘 — 드라이버가 `modelDescription.xml`을 읽어서 실제로 다른 GUID/value-reference를 알아냈다는 증거. Python(fmpy) 쪽으로 대조 검증하려면(`conda activate chrono` 필요): `python fmu/benchmark_rt_jitter.py --fmu fmu/modelica/BouncingBallModelica.fmu --sim-time 10 --label modelica-py-test`.
 
+### 반대 방향: Chrono로 만든 slave를 Modelica가 master로 불러올 수 있나? (fmu/chrono_bouncing_ball_fmu.py)
+
+바로 위는 "Modelica가 만든 FMU를 우리 드라이버가 구동"이었는데, 반대로 **"Chrono 물리를 담은 FMU를 OpenModelica가 master로 불러와 구동"**이 되는지 확인해봄. 결론부터: **지금 방식(pythonfmu)으로는 안 됨** — 막힌 지점과 이유가 명확해서 기록.
+
+**1) 먼저 진짜 Chrono 물리로 FMU를 만듦.** `fmu/chrono_bouncing_ball_fmu.py`는 지금까지의 bouncing ball들과 달리 `do_step()`이 물리를 손으로 적분하지 않고, `pythonfmu`의 `exit_initialization_mode()` 훅에서 진짜 `pychrono.ChSystemNSC`를 만들어(구체 + 바닥, Bullet 충돌, `ChContactMaterialNSC.SetRestitution(e)`) `do_step()`마다 `sys.DoStepDynamics(step_size)`만 호출하고 실제 시뮬레이션된 위치/속도를 읽어옴 — 즉 진짜 "Chrono가 뒤에서 돌아가는 slave".
+
+```bash
+cd fmu
+pythonfmu build -f chrono_bouncing_ball_fmu.py -d build   # build/ChronoBouncingBall.fmu
+```
+
+fmpy로 구동해보면 물리 자체는 정상(바닥 비침투, 바운스마다 높이 감쇠) — 다만 손으로 짠 explicit-Euler 모델과 달리 실제 접촉 솔버가 관여하다 보니 감쇠 비율이 이상적인 e²=0.49에 깔끔히 들어맞지 않고 바운스마다 0.32~0.49 사이로 흔들림(솔버 반복 횟수/수렴 특성 때문으로 추정, 미조사) — 이상화된 수식이 아니라 진짜 물리 엔진이 접촉을 푸는 거라 자연스러운 차이.
+
+**부수적으로 발견한 버그**: fmpy로 8초를 다 돌리고 `freeInstance()`를 호출하는 시점에 `corrupted double-linked list`로 크래시함(시뮬레이션 결과 자체는 끝까지 정상, 정리(cleanup) 단계에서만 죽음). pythonfmu가 내장하는 CPython 인터프리터를 종료하는 과정과 pychrono(SWIG로 감싼 C++ 객체, Bullet 충돌 시스템 등 전역 상태를 가짐)가 서로 안 맞는 것으로 추정 — 아직 원인 미조사, 물리 검증 자체엔 영향 없어서 이번엔 넘어감.
+
+**2) OpenModelica로 이 FMU를 master로 불러오는 두 가지 경로를 시도함:**
+
+- **`omc`의 `importFMU()`** (OMEdit GUI의 "Import FMU" 메뉴가 내부적으로 호출하는 바로 그 함수) — 시도하자마자 `Error: The FMU version is 2.0 and FMU type is CoSimulation. Unsupported FMU type. Only FMI 2.0 ModelExchange is supported.` `pythonfmu`는 Co-Simulation FMU만 만들 수 있는데, 이 경로는 **Model Exchange만** 받음. 즉 OMEdit의 기본 "FMU 불러오기" 메뉴로는 애초에 우리 FMU 종류 자체를 못 받음.
+- **`OMSimulator`** (OpenModelica의 별도 co-simulation 전용 마스터 — `--mode=cs`로 CS FMU를 직접 로드 가능하고, OMEdit 안에도 "SSP" perspective로 통합돼 있음): `OMSimulator --mode=cs ... build/ChronoBouncingBall.fmu` → `undefined symbol: _Py_NoneStruct`로 `fmi2Instantiate()` 자체가 실패. `LD_PRELOAD`로 `libpython3.12.so`를 강제로 얹어서 심볼만 해결해봤더니 이번엔 바로 세그폴트 — 인터프리터가 초기화(`Py_Initialize`)조차 안 된 상태라 더 근본적인 문제였음.
+
+**원인 정리**: `pythonfmu`가 컴파일하는 `.so`는 완전히 독립적인 라이브러리가 아니라, **자신을 dlopen하는 프로세스가 이미 Python 프로세스일 것**(그래서 `libpython` 심볼이 이미 전역 심볼 테이블에 있을 것)을 전제로 함. `fmpy`는 그 자체가 Python 프로세스라 문제없이 동작하고(우리가 이번 세션 내내 잘 썼던 이유), 우리 `fmu_driver`(C)도 결국 이 FMU엔 못 씀(같은 이유). `OMSimulator`/`OMEdit`도 순수 C++ 바이너리라 마찬가지로 안 됨.
+
+**결론**: Chrono 물리를 담은 FMU를 Modelica GUI가 master로 불러오려면, 지금처럼 `pythonfmu`로 Python을 통해 감싸는 방식이 아니라 **C/C++에서 직접 Chrono API를 호출하는 네이티브 FMU**(`fmu/cpp/native_fmu/`가 손물리 대신 실제 `ChSystemNSC` 호출을 하도록 만든 버전)가 필요함 — 이게 바로 README 앞부분에서 언급한, conda `pychrono` 빌드엔 없어서 보류해둔 `chrono_fmi`(Chrono 공식 C++ FMU export 모듈) 경로와 같은 결론으로 다시 수렴함. 즉 "Python으로 감싼 Chrono"는 Python 쪽 master(fmpy 등)까지만 통하고, "진짜 언어 무관 FMU"가 되려면 결국 Chrono를 C++ 소스에서 직접 빌드해야 함.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

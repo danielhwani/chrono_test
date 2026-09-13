@@ -15,3 +15,5 @@ fmu/modelica/*_FMU.libs
 fmu/modelica/*_FMU.makefile
 fmu/modelica/*_info.json
 fmu/modelica/index.html
+fmu/model-*/
+fmu/*.csv
