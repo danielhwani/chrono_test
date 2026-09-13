@@ -259,7 +259,7 @@ cd driver
 
 Python을 fmpy 드라이버에서 C `dlopen` 드라이버로 바꾸는 것만으로 2,685.9ns → 3.67ns, 약 730배 빨라짐 — 격차의 대부분이 "FMU 내부 구현이 Python이냐"가 아니라 "구동 측(driver)이 Python/ctypes냐"였다는 뜻. 완전 네이티브 경로는 이제 순수 C++ 상한선의 1.5배 이내(FMI 함수 포인터 호출 몇 개의 오버헤드)까지 근접.
 
-**네이티브 FMU의 페이싱(paced) 버전 — Python·C++ 둘 다**: 위 `bench`/`csv`는 둘 다 플랫아웃(가능한 빨리 실행)이라 실제 페이싱(wall-clock과 맞추기)이 아님. 아래처럼 Python·C++ 양쪽에 페이싱 모드를 추가함:
+**네이티브 FMU의 페이싱(paced) 버전 — Python·C++ 둘 다**: 위 `bench`/`csv`는 둘 다 플랫아웃(가능한 빨리 실행)이라 실제 페이싱(wall-clock과 맞추기)이 아님. 아래처럼 Python·C++ 양쪽에 페이싱 모드를 추가함. (`fmu_driver.c`는 새 파일이 아니라 기존 파일 그대로에 세 번째 모드만 얹은 것 — `bench`/`csv`는 손대지 않았고 지금도 그대로 동작함. 실행파일 이름도 여전히 `fmu_driver` 하나: `fmu_driver {bench|csv|paced} ...`.)
 
 ```bash
 # Python: 기존 benchmark_rt_jitter.py가 --fmu로 임의의 FMU를 받게 이미 되어 있어서,
