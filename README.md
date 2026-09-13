@@ -421,6 +421,22 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 \
 
 두 경우 다 `Messages` 패널에 `[NewComponent] FMU "bouncing_ball_native_chrono" doesn't support model exchange mode.` / `Only FMI 2.0 ModelExchange is supported.` — 이건 앞서 CLI에서 `omc`의 `importFMU()`를 직접 불렀을 때 나온 에러와 **글자 그대로 동일**함. 즉 System으로 넣든 Submodel로 넣든, OMEdit 1.26.1의 SSP GUI는 FMU를 추가할 때 내부적으로 항상 이 ME 전용 `importFMU()`/`NewComponent` 경로를 거치는 것으로 보임 — CS FMU를 실제로 실행하는 `OMSimulator` 엔진 자체는 멀쩡한데(바로 위에서 CLI로 검증), 그 엔진을 감싼 GUI 쪽의 FMU-추가 기능이 이 버전에서는 CS 전용 FMU를 못 받아들이는 것. 버전 한계/버그로 보이며, 더 시도해볼 만한 GUI 경로는 없어서 여기서 마무리 — **헤드리스 `OMSimulator` CLI가 현재 유일하게 검증된 경로**.
 
+**정리 — "Modelica가 불러올 수 있는 네이티브 FMU"가 되기까지 실제로 뭘 바꿨나**: 세 겹으로 나뉨 — FMU 자체(모델), 그걸 불러오는 우리 드라이버, 그리고 Chrono를 링크한 버전만 추가로 필요했던 빌드/런타임 설정.
+
+1. **`bouncing_ball_native.c` (손물리, 맨 처음 만든 것) — 사실 아무것도 안 바꿨음.** `libc.so.6`만 링크하는 순수 C로 처음부터 만들어져 있었고, `OMSimulator`에 그대로 넣었더니 수정 없이 바로 성공함 — 이게 "대조 실험"으로 pythonfmu 쪽 실패 원인이 Python이었다는 걸 증명하는 기준점이 됨(자세한 내용은 위 "검증" 문단).
+
+2. **`fmu_driver.c` (우리 쪽 C 드라이버) — Modelica가 "만든" FMU를 우리가 불러오기 위해 바꾼 것** (Modelica가 우리 FMU를 불러오는 것과는 반대 방향이지만, 같은 "언어 무관 FMU 구동" 작업이라 같이 기록):
+   - 우리 모델 하나에만 맞춰 하드코딩돼 있던 GUID/`VR_H=3` 등의 value reference를 제거하고, 실행 시점에 `modelDescription.xml`을 직접 읽어 `guid`/`modelIdentifier`/`h`·`v`의 value reference를 알아내도록 변경(`find_attr_value`, `read_whole_file` 함수 추가) — 그 결과 CLI 첫 인자가 `.so` 경로에서 "압축 푼 FMU 디렉터리"로 바뀜.
+   - `fmi2Instantiate`에 넘기던 `NULL` 콜백을 실제 `logger`/`allocateMemory`/`freeMemory` 콜백으로 교체 — OpenModelica가 생성한 FMU는 콜백을 무조건 참조해서 `NULL`이면 인스턴스화 중 바로 세그폴트.
+   - `fmuResourceLocation`을 빈 문자열 대신 `file://<절대경로>/resources` URI로 제대로 구성.
+
+3. **`bouncing_ball_native_chrono.cpp` (신규, Chrono 물리) — 빌드/런타임 설정만 추가, FMI2 코드 구조는 그대로**:
+   - 소스 자체는 `bouncing_ball_native.c`와 같은 FMI2 함수 시그니처를 그대로 유지, `fmi2DoStep` 내부 로직만 `sys->DoStepDynamics()` 호출로 교체 — FMI 쪽 코드를 특별히 더 손볼 필요는 없었음.
+   - **빌드 시점**: `-I`에 Eigen(`envs/chrono/include/eigen3`)과 Chrono 내장 Bullet(`envs/chrono/include/chrono/collision/bullet` — 이 안의 헤더들이 자기 디렉터리 기준 상대경로로 서로를 include함) 두 개를 추가해야 컴파일됨. 링크는 `-lChrono_core` 하나로 충분(Bullet이 정적으로 포함돼 있어서).
+   - **런타임(FMU 자체가 아니라 `OMSimulator`를 실행하는 환경)**: `OMSimulator`(시스템 `libstdc++`에 링크)와 `libChrono_core.so`(conda의 더 새 `libstdc++` 필요)가 같은 soname을 두고 충돌 — `LD_PRELOAD=<conda>/lib/libstdc++.so.6`로 conda 버전을 먼저 로드시켜야 함. **FMU `.so`나 코드를 바꾼 게 아니라, `OMSimulator`를 실행하는 커맨드 앞에 환경변수 하나를 붙인 것뿐.**
+
+4. **OMEdit GUI(SSP 편집기)는 이 세 가지 중 뭘 해도 안 풀림** — 바로 위에서 기록한 대로, GUI 자체가 이 버전에서 CS FMU 추가를 못 받는 별개의 한계라 우리 쪽 FMU/드라이버를 더 고친다고 해결되는 게 아님.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
