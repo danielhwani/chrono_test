@@ -4,3 +4,5 @@ __pycache__/
 fmu/build/
 fmu/cpp/bouncing_ball
 fmu/cpp/*.csv
+fmu/cpp/native_fmu/binaries/
+fmu/cpp/native_fmu/*.fmu

@@ -206,7 +206,30 @@ g++ -O2 -o bouncing_ball bouncing_ball.cpp
 
 **800~1600배 차이.** Python 경로는 fmpy의 ctypes 마샬링 오버헤드 + pythonfmu로 빌드된 FMU가 내부적으로 Python 인터프리터를 다시 호출하는 이중 비용이 있는데, 순수 C++엔 둘 다 없음. 지금은 모델이 스칼라 연산 3개뿐이라 이 정도 배율까지 나온 거고, 나중에 실제 차량처럼 무거운 모델이면 절대 격차는 커지되 RTF 배율 차이는 좁혀질 것.
 
-**다음 단계(미착수)**: FMI2 C API를 직접 구현해서 진짜 네이티브 C++ FMU로 패키징하고, 구동 측도 C++(또는 fmpy가 아닌 C 드라이버)로 — Python이 전혀 안 끼는 완전한 경로를 만드는 것.
+### 네이티브 FMU (fmu/cpp/native_fmu/) — Python 완전 배제
+
+FMI2 C API(`fmi2Instantiate`, `fmi2DoStep`, `fmi2GetReal` 등 표준 함수 전부)를 직접 구현해서 진짜 네이티브 `.fmu`를 만듦. 공식 `fmi2Functions.h`는 레포에 없어서(벤더링 안 함) 스펙에 맞춰 필요한 타입/함수 시그니처만 손으로 선언함. 모델은 지금 단계에선 차량이 필요 없어서 이미 검증된 바운싱볼 그대로 재사용(입출력 변수도 `bouncing_ball_fmu.py`와 동일: `g`,`e`,`floor` 입력 / `h`,`v` 출력).
+
+```bash
+cd fmu/cpp/native_fmu
+./build.sh                    # gcc로 .so 빌드 + modelDescription.xml과 묶어서 .fmu로 zip
+python validate_native_fmu.py # fmpy로 로드+시뮬레이션, 바닥 비침투 + e^2 감쇠 확인
+```
+
+**검증**: 바닥 비침투, 봉우리 감쇠 비율 0.4898~0.4900 (e²=0.49와 거의 완벽히 일치 — Python 버전보다도 더 정확).
+
+**Python이 정말 하나도 안 낀다는 증거**: `ldd binaries/linux64/bouncing_ball_native.so` → `libc.so.6`밖에 안 나옴(pythonfmu 빌드는 내부에 CPython 인터프리터를 통째로 품고 있었음). 파일 크기도 17KB vs pythonfmu `.fmu`의 660KB.
+
+**같은 fmpy 드라이버로 구동해도 속도가 다름** (do_step만 비교):
+
+| FMU | 스텝당 시간 | RTF |
+|---|---|---|
+| pythonfmu 빌드 (내부에 Python 인터프리터 내장) | 4,367.1 ns | 458x |
+| 네이티브 C (이번에 만든 것) | **2,685.9 ns** | **744.6x** |
+
+드라이버(fmpy/ctypes)는 양쪽 다 Python이라 그 오버헤드는 그대로 남아있는데도 약 1.6배 빨라짐 — 이게 "FMU 내부 구현이 Python이냐 아니냐"가 기여하는 몫이고, 순수 C++ `bouncing_ball --bench`의 800배와의 나머지 격차(대략 500배)는 드라이버 쪽(fmpy/ctypes) 오버헤드로 추정됨.
+
+**다음 단계(미착수)**: 구동 측도 fmpy가 아닌 C++(또는 C) 드라이버로 — `dlopen`으로 이 `.so`를 직접 로드해서 `fmi2DoStep` 등을 호출하면, Python이 전혀 안 끼는 완전한 경로가 완성됨. 그러면 드라이버 오버헤드까지 제거됐을 때 순수 C++ `--bench`의 800배에 얼마나 가까워지는지 확인 가능.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
