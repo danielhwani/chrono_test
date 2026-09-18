@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription
+    fmiVersion="2.0"
+    modelName="VehicleNative"
+    guid="{c3d4e5f6-1a2b-4c8d-9e0f-1a2b3c4d5e6f}"
+    description="Native FMI2 C++ API vehicle backed by chrono::ChSystemNSC (4-wheel, rigid tire, flat terrain, parallel steering MVP), see fmu/cpp/native_vehicle_fmu/"
+    generationTool="hand-written"
+    variableNamingConvention="flat">
+
+  <CoSimulation
+      modelIdentifier="vehicle_native"
+      canHandleVariableCommunicationStepSize="true"
+      canGetAndSetFMUstate="false"
+      canSerializeFMUstate="false"/>
+
+  <DefaultExperiment startTime="0.0" stopTime="6.0" stepSize="0.002"/>
+
+  <ModelVariables>
+    <ScalarVariable name="steer_deg" valueReference="0" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="drive_torque" valueReference="1" causality="input" variability="continuous">
+      <Real start="260.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="chassis_x" valueReference="2" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="chassis_y" valueReference="3" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="chassis_z" valueReference="4" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="roll_deg" valueReference="5" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="pitch_deg" valueReference="6" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="yaw_deg" valueReference="7" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="speed_mps" valueReference="8" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="steer_FL_deg" valueReference="9" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="steer_FR_deg" valueReference="10" causality="output" variability="continuous" initial="exact">
+      <Real start="0.0"/>
+    </ScalarVariable>
+  </ModelVariables>
+
+  <ModelStructure>
+    <Outputs>
+      <Unknown index="3"/>
+      <Unknown index="4"/>
+      <Unknown index="5"/>
+      <Unknown index="6"/>
+      <Unknown index="7"/>
+      <Unknown index="8"/>
+      <Unknown index="9"/>
+      <Unknown index="10"/>
+      <Unknown index="11"/>
+    </Outputs>
+  </ModelStructure>
+
+</fmiModelDescription>

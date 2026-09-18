@@ -212,7 +212,7 @@ python validate_vehicle_fmu.py
 
 `ackermann+six_wheel`, `empirical_tire+bumps_terrain` 파라미터 조합도 각각 따로 스모크 테스트 완료 — 전부 정상 동작(FL/FR 조향각이 애커먼답게 갈라짐, 요철 지형 위에서도 정상 주행).
 
-**아직 안 한 것**: 네이티브 C++ 경로(Modelica master가 직접 불러올 수 있는 버전)로 포팅하는 건 아직 안 함 — 서스펜션/디퍼렌셜/조향/타이어력을 전부 C++로 새로 짜야 해서 작업량이 큼. `fmu/cpp/native_fmu/sources/bouncing_ball_native_chrono.cpp`가 그 작업의 템플릿 역할을 할 것.
+네이티브 C++ 포팅은 아래 "네이티브 C++ 차량 (fmu/cpp/native_vehicle_fmu/)" 섹션에서 이어서 완료함.
 
 ## C++ 버전 (fmu/cpp/)
 
@@ -465,6 +465,33 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 \
    - **런타임(FMU 자체가 아니라 `OMSimulator`를 실행하는 환경)**: `OMSimulator`(시스템 `libstdc++`에 링크)와 `libChrono_core.so`(conda의 더 새 `libstdc++` 필요)가 같은 soname을 두고 충돌 — `LD_PRELOAD=<conda>/lib/libstdc++.so.6`로 conda 버전을 먼저 로드시켜야 함. **FMU `.so`나 코드를 바꾼 게 아니라, `OMSimulator`를 실행하는 커맨드 앞에 환경변수 하나를 붙인 것뿐.**
 
 4. **OMEdit GUI(SSP 편집기)는 이 세 가지 중 뭘 해도 안 풀림** — 바로 위에서 기록한 대로, GUI 자체가 이 버전에서 CS FMU 추가를 못 받는 별개의 한계라 우리 쪽 FMU/드라이버를 더 고친다고 해결되는 게 아님.
+
+### 네이티브 C++ 차량 (fmu/cpp/native_vehicle_fmu/)
+
+`bouncing_ball_native_chrono.cpp`가 증명한 패턴("conda env의 Chrono C++ 헤더/라이브러리를 직접 링크하면 Python 없이도, Modelica master가 직접 불러올 수 있는 FMU가 된다")을 실제 차량에 그대로 적용함. `fmu/chrono_vehicle_fmu.py`(pythonfmu)와 인터페이스는 동일(`steer_deg`/`drive_torque` 입력, 섀시 위치/자세/속도/조향각 출력)하되, 내부적으로 C++에서 `chrono::ChSystemNSC`를 직접 조립.
+
+**MVP 범위**: 4륜(전륜조향/후륜구동), rigid 타이어(Bullet Coulomb 접촉), flat 지형, 평행 조향만 먼저 포팅함 — `six_wheel`/`ackermann`/`empirical_tire`/`bumps_terrain`은 다음 단계로 미룸(이 프로젝트 내내 그래왔듯 작게 돌아가는 것부터 먼저). `simple_vehicle.py`의 `make_vehicle()`/`apply_differential()` 로직과 모델 상수(질량, 치수, 스프링/댐퍼 상수 등)를 C++로 그대로 옮겨 적음.
+
+```bash
+cd fmu/cpp/native_vehicle_fmu
+CHRONO_ENV=~/miniconda3/envs/chrono ./build.sh   # 기본값도 이 경로라 보통은 인자 없이 됨
+```
+
+**API 이름이 Python 바인딩과 다른 부분들**: PyChrono는 SWIG로 감싼 편의 이름을 쓰지만(`GetPosDt()`, `wheel.GetContactForce()`), C++ 원본 API에서는 벡터 성분 접근이 `.x()`/`.y()`/`.z()`(함수 호출, 속성이 아님), 조인트 계층이 `ChLinkMateGeneric`(모터)과 `ChLinkMarkers`(락 조인트)로 나뉘어 있는 등 세부가 다름 — 전부 헤더를 직접 grep해서 정확한 시그니처를 확인하고 맞춰씀(추측으로 짜지 않음).
+
+**검증 — pythonfmu 버전과 bit-exact 일치**: 같은 시나리오(t>1.0s부터 steer_deg=20, drive_torque=260, dt=0.005)를 두 FMU에 각각 흘려서 비교:
+
+```bash
+cd fmu/cpp/native_vehicle_fmu
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 \
+  OMSimulator --mode=cs --startTime=0 --stopTime=6 --stepSize=0.002 --resultFile=result.csv vehicle_native.fmu
+```
+
+fmpy로 같은 dt(0.005)를 맞춰 6초를 돌려보면 `chassis_x/y`, `yaw_deg`, `speed_mps`가 pythonfmu 버전(`ChronoVehicle.fmu`)과 **소수점까지 완전히 일치**(예: t=6.0s에서 양쪽 다 x=2.045, yaw=-149.487, speed=5.314) — 같은 Chrono 솔버를 호출하는 거라 당연하지만, C++ 포팅 과정에서 상수/부호/축 하나 잘못 옮기지 않았다는 직접적인 증거. (참고: dt를 다르게 주면 당연히 갈라짐 — 비선형 차량 동역학이라 스텝 크기가 다르면 수치적분 오차가 다르게 누적되는 것뿐, 버그 아님.)
+
+**`OMSimulator`로 실제 구동 — 진짜 차량 물리가 Modelica master의 slave로 동작함**: 위 명령 그대로 `exit 0`, `result.csv`에 직진 가속(steer_deg 기본값 0이라 입력 안 주면 직진, t=6s에 x≈21.4m, speed≈7.1m/s로 물리적으로 타당)이 정상적으로 찍힘. 바운싱볼에서 이미 증명된 "네이티브 C++ FMU는 Python 없이, 어떤 FMI master든(OMSimulator 포함) 코드 수정 없이 불러온다"는 게 실제 차량 규모(강체 10여 개, 조인트 20여 개, 접촉/서스펜션/디퍼렌셜)에서도 그대로 성립함을 확인.
+
+**다음**: `six_wheel`/`ackermann`/`empirical_tire`/`bumps_terrain`을 C++ 쪽에도 추가(파라미터로), Irrlicht 렌더링(아직 미검증인 `libChrono_irrlicht.so` 경로), OMEdit GUI에서 여전히 안 되는지 재확인(바운싱볼 때와 같은 한계일 가능성 높음, 재확인은 안 함).
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

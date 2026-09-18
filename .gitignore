@@ -19,3 +19,6 @@ fmu/modelica/*_info.json
 fmu/modelica/index.html
 fmu/model-*/
 fmu/*.csv
+fmu/cpp/native_vehicle_fmu/binaries/
+fmu/cpp/native_vehicle_fmu/*.fmu
+fmu/cpp/native_vehicle_fmu/*.csv
