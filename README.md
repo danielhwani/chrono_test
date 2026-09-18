@@ -97,7 +97,7 @@ python slip_demo.py --switch-time 4.0
   2. Chrono 공식 `chrono_fmi` export 모듈 자체는 conda `pychrono` 바이너리에 없음. 다만 **"Chrono를 C++에서 쓰려면 소스 빌드가 필요하다"는 건 틀렸다는 게 나중에 밝혀짐** — conda `chrono` env 안에 Chrono의 C++ 헤더/라이브러리(`libChrono_core.so` 등)가 이미 들어 있어서, 그걸 직접 링크하는 손수 FMI2 C++ 래퍼로 우회 성공함. 자세한 내용은 아래 "완성: 네이티브 FMU 안에서 진짜 ChSystemNSC 호출" 섹션 참고.
 - **제어**: ros_control 스타일 — 아직 미착수.
 
-**진행 상황**: `fmu/` 아래에 pythonfmu 툴체인 자체를 검증하는 토이 FMU(`free_fall_fmu.py`, 자유낙하 적분기)를 먼저 만들어 빌드→로드→시뮬레이션이 실제로 동작하는지 확인 완료. 다음 단계는 이 틀에 실제 차량(`make_vehicle`) 동역학을 넣는 것.
+**진행 상황**: `fmu/` 아래에 pythonfmu 툴체인 자체를 검증하는 토이 FMU(`free_fall_fmu.py`, 자유낙하 적분기)를 먼저 만들어 빌드→로드→시뮬레이션이 실제로 동작하는지 확인 완료. (이후 이 틀에 실제 차량 동역학을 넣는 작업까지 완료 — "## 실제 차량을 FMU로 감싸기" 섹션 참고. 아래부터 여기까지는 전부 그 전 단계, 토이 바운싱볼 모델로 툴체인 자체를 검증하던 기록.)
 
 ```bash
 conda activate chrono
@@ -184,6 +184,35 @@ python plot_rt_comparison.py
 **결론: "C++이 확실히 우위"는 아니었음.** SCHED_OTHER끼리, SCHED_FIFO끼리 비교하면 Python과 C++이 거의 구분 안 될 정도로 비슷함(FIFO의 max는 둘 다 5.1만μs대, 발생 빈도도 0.19%대로 거의 일치) — 이전에 봤던 "언어에 따라 방향이 다르다"는 건 작은 표본(2500~7500) 노이즈였던 게 확인됨. `yield()` 기반 페이싱으로 고친 뒤에는 **페이싱 지터가 언어 문제가 아니라 순수 OS/스케줄러 레벨 현상**이라는 게 이번 큰 표본으로 재확인됨. (참고: 이번 라운드의 C++ OTHER는 우연히 큰 스톨을 안 만나서 max가 특히 깨끗하게 나왔음 — run-to-run 변동이 있다는 것도 그대로 보여주는 사례.)
 
 C++이 여전히 명확히 이기는 영역은 **원시 계산 속도**뿐임(`--bench` 기준 800배 이상, 이건 페이싱과 무관하게 항상 성립). "실시간 페이싱 정확도"는 이제 두 언어가 동등하다고 보는 게 맞음.
+
+## 실제 차량을 FMU로 감싸기 (fmu/chrono_vehicle_fmu.py)
+
+지금까지의 모든 FMU/FMI 작업(pythonfmu, 네이티브 C/C++, Modelica 상호운용, 페이싱/지터 도구)은 전부 장난감 바운싱볼 모델로 툴체인 자체를 검증하는 단계였음. 이번이 그 인프라를 실제로 써먹는 첫 케이스 — `simple_vehicle.py`의 `make_vehicle()`을 pythonfmu로 감쌈(코드 재사용이 빠르고, `--irrlicht` 데모처럼 이미 검증된 함수들을 그대로 부르기만 하면 돼서 pythonfmu를 먼저 선택함 — 네이티브 C++ 경로는 서스펜션/디퍼렌셜/타이어력/조향까지 전부 새로 C++로 짜야 해서 작업량이 훨씬 큼).
+
+**구조적 설정 vs 실시간 입력을 나눔**: 6륜/애커먼/타이어모델/지형처럼 차체 자체를 바꾸는 옵션은 FMI2 `parameter`(초기화 중에만 설정 가능, `Boolean`)로, 조향각/구동토크처럼 매 스텝 바뀌는 값은 `input`(`Real`)으로 노출:
+
+```
+parameter (Boolean): six_wheel, ackermann, empirical_tire, bumps_terrain
+input     (Real):    steer_deg, drive_torque
+output    (Real):    chassis_x/y/z, roll/pitch/yaw_deg, speed_mps, steer_FL/FR_deg
+```
+
+`simple_vehicle.py`의 `main()`이 CLI 옵션으로 하던 걸 그대로 매핑한 것 — 다만 `main()`의 `steer_angle_deg()` 램프와 고정 `DRIVE_TORQUE`는 그 스크립트 자체의 데모 편의였던 거라, FMU에서는 이 두 값을 매 스텝 마스터가 직접 넣어주는 진짜 `input`으로 바꿈(그래야 나중에 ros_control 같은 외부 제어기가 실제로 명령을 내릴 수 있음).
+
+빌드 시 `simple_vehicle.py`를 "project file"로 같이 넘겨서 FMU 리소스 안에 번들함(pythonfmu가 지원하는 기능):
+```bash
+cd fmu
+pythonfmu build -f chrono_vehicle_fmu.py -d build ../simple_vehicle.py   # build/ChronoVehicle.fmu
+python validate_vehicle_fmu.py
+```
+
+**빌드 중 걸린 것 하나**: pythonfmu의 빌드 과정 자체가 FMU 클래스를 알아내려고 스크립트를 직접 import함 — 이때는 아직 패키징 전이라 `simple_vehicle.py`가 (FMU 리소스 안이 아니라) 저장소 루트에 그대로 있음. 반면 실제 FMU가 나중에 실행될 때는 리소스 폴더 안에 번들되어 옆에 있음. 두 시점의 경로가 달라서, `sys.path`에 스크립트 자신의 디렉터리와 그 상위 디렉터리를 둘 다 넣어야 양쪽 다 import가 됨.
+
+**검증 (`validate_vehicle_fmu.py`)**: 같은 스텝-조향 시나리오를 (1) `make_vehicle()`을 직접 불러 도는 참조 루프와 (2) FMU를 fmpy로 구동한 루프, 두 가지로 돌려서 최종 섀시 위치/자세를 비교 — **완전히 일치**(`chassis_x/y/z`, `yaw_deg` 전부 diff `0.00e+00`). 결정론적 솔버라 당연한 결과지만, FMI2로 감싸는 과정 자체가 물리에 아무 영향을 안 줬다는 걸 직접 확인한 것.
+
+`ackermann+six_wheel`, `empirical_tire+bumps_terrain` 파라미터 조합도 각각 따로 스모크 테스트 완료 — 전부 정상 동작(FL/FR 조향각이 애커먼답게 갈라짐, 요철 지형 위에서도 정상 주행).
+
+**아직 안 한 것**: 네이티브 C++ 경로(Modelica master가 직접 불러올 수 있는 버전)로 포팅하는 건 아직 안 함 — 서스펜션/디퍼렌셜/조향/타이어력을 전부 C++로 새로 짜야 해서 작업량이 큼. `fmu/cpp/native_fmu/sources/bouncing_ball_native_chrono.cpp`가 그 작업의 템플릿 역할을 할 것.
 
 ## C++ 버전 (fmu/cpp/)
 
