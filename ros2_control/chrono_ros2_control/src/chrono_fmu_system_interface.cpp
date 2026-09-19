@@ -177,6 +177,15 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
     return hardware_interface::return_type::ERROR;
   }
 
+  // TODO(step 7): this always advances the FMU by the fixed kStepSize
+  // (0.002s), ignoring the real `period` controller_manager passes into
+  // write(). Fine for this file's own local test harness (which drives the
+  // loop at exactly 2ms itself), but if the real controller_manager's
+  // actual cycle time ever drifts from 2ms, the FMU's simulated time and
+  // wall-clock time will diverge. Revisit once step 7 runs this against a
+  // real controller_manager and its real timing is known -- either use
+  // `period` directly as the step size, or sub-step to keep FMU time
+  // locked to wall-clock time regardless of controller_manager's rate.
   if (!fmu_client_do_step(fmu_, sim_time_, kStepSize)) {
     RCLCPP_ERROR(logger(), "fmu_client_do_step failed at t=%f", sim_time_);
     return hardware_interface::return_type::ERROR;
