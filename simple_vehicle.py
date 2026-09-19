@@ -130,7 +130,8 @@ def ackermann_wheel_angles_deg(steer_deg, wheelbase, track):
     return sign * inner_deg, sign * outer_deg  # turning left: left wheel is on the inside
 
 
-def make_vehicle(sys: chrono.ChSystem, six_wheel: bool = False, terrain: str = "flat"):
+def make_vehicle(sys: chrono.ChSystem, six_wheel: bool = False, terrain: str = "flat",
+                  four_wheel_drive: bool = False):
     contact_method = sys.GetContactMethod()
     if contact_method == chrono.ChContactMethod_NSC:
         mat = chrono.ChContactMaterialNSC()
@@ -189,15 +190,20 @@ def make_vehicle(sys: chrono.ChSystem, six_wheel: bool = False, terrain: str = "
     sys.Add(chassis)
 
     # axles: (name prefix, x position, is_steered, is_driven)
+    # four_wheel_drive only affects the front axle -- it's always the steered
+    # one (front-wheel steer, never rear- or all-wheel steer), and adding a
+    # drive motor to an already-steered corner is exactly how a real
+    # CV-jointed front driveshaft works: the motor is on the knuckle->wheel
+    # joint, so it drives correctly no matter the current steer angle.
     if six_wheel:
         axles = [
-            ("F", WHEELBASE_6W / 2, True, False),
+            ("F", WHEELBASE_6W / 2, True, four_wheel_drive),
             ("M", 0.0, False, True),
             ("R", -WHEELBASE_6W / 2, False, True),
         ]
     else:
         axles = [
-            ("F", WHEELBASE / 2, True, False),
+            ("F", WHEELBASE / 2, True, four_wheel_drive),
             ("R", -WHEELBASE / 2, False, True),
         ]
 

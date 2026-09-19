@@ -95,7 +95,7 @@ python slip_demo.py --switch-time 4.0
 - **동역학**: FMU로 래핑.
   1. **`pythonfmu`** (진행 중, `fmu/` 디렉터리): 순수 Python이라 Chrono/C++을 새로 빌드할 필요 없음. 실행 쪽에 Python 런타임이 있어야 하는 게 유일한 제약.
   2. Chrono 공식 `chrono_fmi` export 모듈 자체는 conda `pychrono` 바이너리에 없음. 다만 **"Chrono를 C++에서 쓰려면 소스 빌드가 필요하다"는 건 틀렸다는 게 나중에 밝혀짐** — conda `chrono` env 안에 Chrono의 C++ 헤더/라이브러리(`libChrono_core.so` 등)가 이미 들어 있어서, 그걸 직접 링크하는 손수 FMI2 C++ 래퍼로 우회 성공함. 자세한 내용은 아래 "완성: 네이티브 FMU 안에서 진짜 ChSystemNSC 호출" 섹션 참고.
-- **제어**: `ros_control`(ROS1, EOL)이 아니라 **`ros2_control`**로 방향을 잡음 — 이 머신엔 ROS2 Humble이 이미 설치돼 있음(`/opt/ros/humble`). 구상: `diff_drive_controller`/`ackermann_steering_controller` 같은 표준 컨트롤러 → `command_interfaces`(조향각, 바퀴별 토크) → 커스텀 `hardware_interface::SystemInterface` 플러그인(`ChronoFmuSystemInterface`) → 같은 프로세스 안에서 `fmi2SetReal()`→`fmi2DoStep()`→`fmi2GetReal()` 직접 호출 → `vehicle_native.fmu`. `SystemInterface`는 그냥 `pluginlib`이 로드하는 C++ 클래스라, `fmu_driver.c`가 이미 하고 있는 `dlopen`+FMI2 직접 호출을 거의 그대로 재사용 가능 — 아직 미착수.
+- **제어**: `ros_control`(ROS1, EOL)이 아니라 **`ros2_control`**로 방향을 잡음 — 이 머신엔 ROS2 Humble이 이미 설치돼 있음(`/opt/ros/humble`). 컨트롤러는 **`ackermann_steering_controller`**로 확정(설치된 `steering_controllers_library`의 실제 파라미터 `front_wheels_names`/`rear_wheels_names`와 공식 문서를 직접 확인 — 처음엔 `bicycle_steering_controller`를 생각했다가, 우리 차량의 실제 FL/FR/RL/RR 구조를 그대로 못 살린다는 지적을 받고 바꿈). 구상: `command_interfaces`(전륜 조향각 2개, 후륜 트랙션 1개) → 커스텀 `hardware_interface::SystemInterface` 플러그인(`ChronoFmuSystemInterface`) → 같은 프로세스 안에서 `fmi2SetReal()`→`fmi2DoStep()`→`fmi2GetReal()` 직접 호출 → `vehicle_native.fmu`. `SystemInterface`는 그냥 `pluginlib`이 로드하는 C++ 클래스라, `fmu_driver.c`가 이미 하고 있는 `dlopen`+FMI2 직접 호출을 거의 그대로 재사용 가능. 4WD 처리 방식은 아래 "4WD (전축 구동) 추가" 섹션 참고 — 아직 미착수인 건 `ChronoFmuSystemInterface` 자체.
 
 **진행 상황**: `fmu/` 아래에 pythonfmu 툴체인 자체를 검증하는 토이 FMU(`free_fall_fmu.py`, 자유낙하 적분기)를 먼저 만들어 빌드→로드→시뮬레이션이 실제로 동작하는지 확인 완료. (이후 이 틀에 실제 차량 동역학을 넣는 작업까지 완료 — "## 실제 차량을 FMU로 감싸기" 섹션 참고. 아래부터 여기까지는 전부 그 전 단계, 토이 바운싱볼 모델로 툴체인 자체를 검증하던 기록.)
 
@@ -515,6 +515,26 @@ cd fmu/cpp/native_fmu/driver
 **회귀 확인**: 옵션 없이 기존처럼 `./fmu_driver .. bench/csv/paced ...`를 다시 돌려서 바운싱볼 FMU 결과가 전과 완전히 같은 수치로 나오는 것 확인(`h=3.278573 v=-5.615244` 등, 이전 세션 결과와 동일).
 
 **부산물**: 차량 FMU의 첫 순수 벤치마크 수치도 나옴(`bench` 모드) — **~585μs/step, 약 3.4x realtime**. 강체 10여 개 + 조인트 20여 개 + 접촉/서스펜션이 있는 모델이라 바운싱볼(수 ns/step)과는 자릿수가 완전히 다르지만, 목표 스텝(2ms)보다는 여전히 3배 이상 빨라서 `paced` 모드도 별문제 없이 맞춰 돔(p50/p95 ≈ 2000.0/2000.6us, p999은 그래도 약간 더 벌어짐 — 여유가 줄어든 만큼 자연스러운 결과).
+
+### 4WD (전축 구동) 추가 — ros2_control 방향 논의에서 나온 요구사항
+
+ros2_control 설계를 얘기하다가(`ackermann_steering_controller`는 표준상 **후륜에만 구동 명령**을 내리게 돼 있음 — 공식 문서에 "traction, one for each fixed [rear] wheel"이라고 명시돼 있음, `control.ros.org` 확인) 4WD를 어떻게 넣을지 결정함: 컨트롤러는 표준 그대로 두고, `ChronoFmuSystemInterface`(아직 미착수)가 후륜 트랙션 요청 하나를 "전체 스로틀"로 해석해서 앞뒤 양쪽 축에 내부적으로 뿌려주기로 함(실제 차도 ECU는 스로틀 하나만 정하고 배분은 드라이브트레인 하드웨어가 함). 이걸 가능하게 하려면 **모델 자체가 4WD를 지원해야** 해서, ros2_control 작업(1번)보다 먼저 여기(0.5번)부터 함.
+
+**조향과 구동이 같은 축에서 충돌하지 않는 이유**: 전축은 원래도 조향축(업라이트→너클 회전)이었는데, 구동 모터를 "너클→휠" 관절(스핀 축)에 얹으면 됨 — 이 관절 자체가 이미 너클의 현재 조향각을 따라 회전한 상태라서, 실제 CV(등속) 조인트가 달린 전륜구동축과 똑같은 방식으로 동작함. `make_vehicle()`/`vehicle_native.cpp` 코드 구조가 애초에 "조향축이든 아니든 그 축의 `spin_parent`에 구동 모터를 붙인다"는 식으로 이미 일반적으로 짜여 있어서, 이 조합 자체엔 핵심 로직 변경이 전혀 필요 없었음(축 리스트에서 `is_driven` 플래그 하나만 바꾸면 됨).
+
+**독립적인 앞/뒤 토크 입력**(B안 — "표준을 따르면 살기 편해져"라 컨트롤러 표준을 지키면서도 FMU 자체는 유연하게 열어둠):
+```
+four_wheel_drive     구조적 파라미터(bool) — 초기화 시에만 설정, 기본 false(후륜 전용, 기존과 동일)
+drive_torque         기존 그대로, 후륜 명목 토크
+drive_torque_front   신규, 전륜 명목 토크 (four_wheel_drive=false면 안 쓰임)
+```
+- `simple_vehicle.py`: `make_vehicle(..., four_wheel_drive=False)` 파라미터 추가 — 기본값 False라 `simple_vehicle.py`/`drive_vehicle.py`/`slip_demo.py` 등 기존 호출 전부 무변화. `apply_differential()` 자체는 안 건드림(이미 어떤 축 그룹이 들어오든 일반적으로 처리하게 짜여 있었음) — 전축용/후축용으로 두 번 나눠 호출하도록 호출부만 바꿈.
+- `chrono_vehicle_fmu.py`: `four_wheel_drive`(Boolean parameter) + `drive_torque_front`(Real input) 추가.
+- `vehicle_native.cpp`: 이 파일은 FMU 전용이라 다른 호출자를 신경 쓸 필요는 없지만, **Python FMU와의 bit-exact 비교를 계속 유지하려고** 똑같이 `four_wheel_drive`(0.0/1.0, `build()` 시점에 한 번만 읽음) 구조적 토글을 넣음 — 값 12(`four_wheel_drive`), 11(`drive_torque_front`)로 뒤에 추가, 기존 0~10번 변수는 그대로.
+
+**검증**: `validate_native_vehicle_fmu.py`를 확장해서 2WD/4WD 두 시나리오 다 Python FMU vs 네이티브 C++ FMU를 비교하도록 함 — **둘 다 0.00e+00**(2WD도 4WD도 소수점까지 완전히 일치), 4WD 추가가 C++ 포팅에서도 정확히 재현됐다는 뜻.
+
+**뜻밖의 발견 (버그 아님, 정직하게 기록)**: `four_wheel_drive=True`인데 `drive_torque_front=0`으로 주면, `four_wheel_drive=False`(전륜 모터 자체가 없음)와 **완전히 같지는 않음**(6초 뒤 yaw 기준 약 0.03도 차이). 원인은 전륜에도 이미 있던 `ChLinkLockRevolute`(스핀 조인트)와 새로 얹은 `ChLinkMotorRotationTorque`(구동 모터)가 같은 두 바디 사이에 같은 프레임으로 겹쳐서, 토크가 정확히 0이라도 구속조건 개수가 늘어나 150회 고정 반복(BARZILAIBORWEIN) 솔버의 근사해가 아주 살짝 달라지기 때문으로 보임 — `four_wheel_drive=False`(전륜 모터가 아예 안 생성됨)일 때는 기존 동작과 완벽하게 일치하는 걸 이미 확인했으니, 이건 "구조 자체를 켜는 것"의 부작용이지 로직 버그는 아님.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

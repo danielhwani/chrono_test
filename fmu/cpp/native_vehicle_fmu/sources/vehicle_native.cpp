@@ -16,18 +16,32 @@
  * damper rates, etc.) are copied verbatim from simple_vehicle.py's module
  * constants.
  *
+ * four_wheel_drive is the one structural option this file DOES have (added
+ * after the MVP, mirroring fmu/chrono_vehicle_fmu.py's parameter of the same
+ * name): off by default (rear-only drive, bit-exact with every earlier
+ * validation run), on adds a drive motor to the front (already-steered)
+ * corners too -- same knuckle->wheel joint as steering, no conflict, exactly
+ * like a real CV-jointed front driveshaft. Read once in build(), like g/e/
+ * floor in the bouncing-ball model, so it must be set before the first
+ * fmi2DoStep (i.e. during initialization).
+ *
  * Variables (value references):
- *   0: steer_deg      input   [deg]   commanded front-wheel steer angle
- *   1: drive_torque   input   [N*m]   nominal per-driven-wheel torque
- *   2: chassis_x      output  [m]
- *   3: chassis_y      output  [m]
- *   4: chassis_z      output  [m]
- *   5: roll_deg       output  [deg]
- *   6: pitch_deg      output  [deg]
- *   7: yaw_deg        output  [deg]
- *   8: speed_mps      output  [m/s]   sqrt(vx^2+vy^2)
- *   9: steer_FL_deg   output  [deg]
- *  10: steer_FR_deg   output  [deg]
+ *   0: steer_deg          input   [deg]   commanded front-wheel steer angle
+ *   1: drive_torque       input   [N*m]   nominal rear-wheel drive torque
+ *   2: chassis_x          output  [m]
+ *   3: chassis_y          output  [m]
+ *   4: chassis_z          output  [m]
+ *   5: roll_deg           output  [deg]
+ *   6: pitch_deg          output  [deg]
+ *   7: yaw_deg            output  [deg]
+ *   8: speed_mps          output  [m/s]   sqrt(vx^2+vy^2)
+ *   9: steer_FL_deg       output  [deg]
+ *  10: steer_FR_deg       output  [deg]
+ *  11: drive_torque_front input   [N*m]   nominal front-wheel drive torque
+ *                                          (only takes effect if
+ *                                          four_wheel_drive != 0)
+ *  12: four_wheel_drive   input   [0/1]   read once in build(); nonzero
+ *                                          also drives the front axle
  *
  * Build: see ../build.sh
  */
@@ -113,6 +127,8 @@ struct Corner {
 struct ModelInstance {
     fmi2Real steer_deg_in = 0.0;
     fmi2Real drive_torque_in = DRIVE_TORQUE_DEFAULT;
+    fmi2Real drive_torque_front_in = 0.0;
+    fmi2Real four_wheel_drive_in = 0.0;  // read once in build(); 0.0=off (default, rear-only)
 
     fmi2Real chassis_x = 0.0, chassis_y = 0.0, chassis_z = 0.0;
     fmi2Real roll_deg = 0.0, pitch_deg = 0.0, yaw_deg = 0.0;
@@ -221,9 +237,17 @@ void ModelInstance::build() {
     chassis->SetPos(ChVector3d(0, 0, chassis_z));
     sys->Add(chassis);
 
-    // corner order: FL, FR, RL, RR -- front (x=+WHEELBASE/2) steered, rear driven
-    make_corner(*sys, chassis, corners[0], WHEELBASE / 2, TRACK / 2, chassis_z, true, false, mat);
-    make_corner(*sys, chassis, corners[1], WHEELBASE / 2, -TRACK / 2, chassis_z, true, false, mat);
+    // corner order: FL, FR, RL, RR -- front (x=+WHEELBASE/2) always steered;
+    // whether it's ALSO driven depends on four_wheel_drive_in (read once
+    // here, matching fmu/chrono_vehicle_fmu.py's structural four_wheel_drive
+    // parameter -- default off, so this stays bit-exact with the rear-only
+    // behavior every earlier validation run already checked). When on, the
+    // drive motor sits on the same knuckle->wheel joint used for steering --
+    // exactly like a real CV-jointed front driveshaft, no conflict with
+    // steering at all.
+    bool four_wheel_drive = four_wheel_drive_in != 0.0;
+    make_corner(*sys, chassis, corners[0], WHEELBASE / 2, TRACK / 2, chassis_z, true, four_wheel_drive, mat);
+    make_corner(*sys, chassis, corners[1], WHEELBASE / 2, -TRACK / 2, chassis_z, true, four_wheel_drive, mat);
     make_corner(*sys, chassis, corners[2], -WHEELBASE / 2, TRACK / 2, chassis_z, false, true, mat);
     make_corner(*sys, chassis, corners[3], -WHEELBASE / 2, -TRACK / 2, chassis_z, false, true, mat);
 
@@ -251,8 +275,10 @@ void ModelInstance::step(double dt) {
         }
     }
 
-    // rear axle (corners 2=RL, 3=RR) is the only driven axle in this MVP
-    apply_differential(corners[2], corners[3], drive_torque_in);
+    apply_differential(corners[2], corners[3], drive_torque_in);       // rear axle, always driven
+    if (corners[0].drive_motor) {                                     // front axle, only if four_wheel_drive
+        apply_differential(corners[0], corners[1], drive_torque_front_in);
+    }
 
     sys->DoStepDynamics(dt);
 
@@ -285,11 +311,15 @@ void ModelInstance::step(double dt) {
 #define VR_SPEED_MPS 8
 #define VR_STEER_FL_DEG 9
 #define VR_STEER_FR_DEG 10
+#define VR_DRIVE_TORQUE_FRONT 11
+#define VR_FOUR_WHEEL_DRIVE 12
 
 static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
         case VR_STEER_DEG: return &m->steer_deg_in;
         case VR_DRIVE_TORQUE: return &m->drive_torque_in;
+        case VR_DRIVE_TORQUE_FRONT: return &m->drive_torque_front_in;
+        case VR_FOUR_WHEEL_DRIVE: return &m->four_wheel_drive_in;
         case VR_CHASSIS_X: return &m->chassis_x;
         case VR_CHASSIS_Y: return &m->chassis_y;
         case VR_CHASSIS_Z: return &m->chassis_z;

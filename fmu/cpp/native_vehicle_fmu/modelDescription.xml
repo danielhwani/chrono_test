@@ -49,6 +49,12 @@
     <ScalarVariable name="steer_FR_deg" valueReference="10" causality="output" variability="continuous" initial="exact">
       <Real start="0.0"/>
     </ScalarVariable>
+    <ScalarVariable name="drive_torque_front" valueReference="11" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="four_wheel_drive" valueReference="12" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
   </ModelVariables>
 
   <ModelStructure>

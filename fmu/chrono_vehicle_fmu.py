@@ -15,13 +15,22 @@ only during initialization, mirroring simple_vehicle.py's CLI flags):
     ackermann        bool   parallel (false) vs Ackermann-geometry steering
     empirical_tire   bool   rigid Coulomb contact (false) vs slip-based tire
     bumps_terrain    bool   flat ground (false) vs a row of speed bumps
+    four_wheel_drive bool   rear-only drive (false, default) vs also driving
+                            the front (steered) axle -- adding a drive motor
+                            to an already-steered corner is exactly how a
+                            real CV-jointed front driveshaft works, so this
+                            doesn't conflict with steering at all
 
-Runtime control is two `input` variables the master drives every step
-(replacing simple_vehicle.py main()'s own steer_angle_deg() ramp and fixed
-DRIVE_TORQUE constant, which were conveniences for the standalone demo --
-a real FMI slave should let the master command these directly):
-    steer_deg        commanded front-wheel steer angle, degrees
-    drive_torque     nominal per-wheel drive torque, N*m
+Runtime control is `input` variables the master drives every step (replacing
+simple_vehicle.py main()'s own steer_angle_deg() ramp and fixed DRIVE_TORQUE
+constant, which were conveniences for the standalone demo -- a real FMI
+slave should let the master command these directly):
+    steer_deg          commanded front-wheel steer angle, degrees
+    drive_torque        nominal rear-wheel drive torque, N*m
+    drive_torque_front  nominal front-wheel drive torque, N*m (only takes
+                        effect when four_wheel_drive is true; default 0.0
+                        is physically equivalent to no front motor at all,
+                        so leaving it unset is backward compatible)
 
 Outputs mirror vehicle_log.csv's columns (position/orientation/speed/actual
 steer angles), so this can be validated against the exact same signals the
@@ -78,10 +87,12 @@ class ChronoVehicle(Fmi2Slave):
         self.ackermann = False
         self.empirical_tire = False
         self.bumps_terrain = False
+        self.four_wheel_drive = False
 
         # ---- runtime inputs ----
         self.steer_deg = 0.0
         self.drive_torque = DRIVE_TORQUE
+        self.drive_torque_front = 0.0
 
         # ---- outputs ----
         self.chassis_x = 0.0
@@ -94,7 +105,7 @@ class ChronoVehicle(Fmi2Slave):
         self.steer_FL_deg = 0.0
         self.steer_FR_deg = 0.0
 
-        for name in ("six_wheel", "ackermann", "empirical_tire", "bumps_terrain"):
+        for name in ("six_wheel", "ackermann", "empirical_tire", "bumps_terrain", "four_wheel_drive"):
             self.register_variable(
                 Boolean(name, causality=Fmi2Causality.parameter, variability=Fmi2Variability.fixed)
             )
@@ -103,6 +114,9 @@ class ChronoVehicle(Fmi2Slave):
         )
         self.register_variable(
             Real("drive_torque", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
+        )
+        self.register_variable(
+            Real("drive_torque_front", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
         )
         for name in ("chassis_x", "chassis_y", "chassis_z", "roll_deg", "pitch_deg", "yaw_deg",
                      "speed_mps", "steer_FL_deg", "steer_FR_deg"):
@@ -116,6 +130,10 @@ class ChronoVehicle(Fmi2Slave):
         self._motors = None
         self._steer_functions = None
         self._throttle_functions = None
+        self._front_motors = None
+        self._front_throttle_functions = None
+        self._rear_motors = None
+        self._rear_throttle_functions = None
         self._tire_accumulators = None
         self._wheelbase = WHEELBASE
 
@@ -129,12 +147,23 @@ class ChronoVehicle(Fmi2Slave):
         terrain = "bumps" if self.bumps_terrain else "flat"
         (self._chassis, self._wheels, _springs, self._motors,
          self._steer_functions, self._throttle_functions) = make_vehicle(
-            self._sys, six_wheel=self.six_wheel, terrain=terrain
+            self._sys, six_wheel=self.six_wheel, terrain=terrain,
+            four_wheel_drive=self.four_wheel_drive,
         )
         self._wheelbase = WHEELBASE_6W if self.six_wheel else WHEELBASE
         self._tire_accumulators = (
             setup_empirical_tire_wheels(self._wheels) if self.empirical_tire else None
         )
+
+        # Split the driven corners into "front" (only present when
+        # four_wheel_drive is set) and "rear" (everything else -- R alone
+        # for the 4-wheel car, M+R for six_wheel, unchanged from before)
+        # so do_step() can apply drive_torque_front/drive_torque
+        # independently instead of one shared value for every driven axle.
+        self._front_motors = {k: v for k, v in self._motors.items() if k.startswith("F")}
+        self._front_throttle_functions = {k: v for k, v in self._throttle_functions.items() if k.startswith("F")}
+        self._rear_motors = {k: v for k, v in self._motors.items() if not k.startswith("F")}
+        self._rear_throttle_functions = {k: v for k, v in self._throttle_functions.items() if not k.startswith("F")}
 
     def do_step(self, current_time: float, step_size: float) -> bool:
         if self.ackermann:
@@ -148,7 +177,8 @@ class ChronoVehicle(Fmi2Slave):
             for fn in self._steer_functions.values():
                 fn.SetConstant(cur_steer_rad)
 
-        apply_differential(self._motors, self._throttle_functions, self.drive_torque)
+        apply_differential(self._rear_motors, self._rear_throttle_functions, self.drive_torque)
+        apply_differential(self._front_motors, self._front_throttle_functions, self.drive_torque_front)
         if self._tire_accumulators is not None:
             apply_tire_forces(self._wheels, self._tire_accumulators)
 
