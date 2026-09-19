@@ -631,7 +631,11 @@ check_urdf ros2_control/urdf/chrono_vehicle.urdf
 xmllint --noout ros2_control/urdf/chrono_vehicle.urdf
 ```
 
-**RViz로 직접 가시화**(`ros2_control/urdf/display.launch.py` + `chrono_vehicle.rviz`): `robot_state_publisher`+`joint_state_publisher_gui`+`rviz2`를 한 번에 띄움. 시각 형상(`<visual>`)이 없는 URDF라 `RobotModel` 디스플레이엔 아무것도 안 보이지만, `TF` 디스플레이로 `base_link`/`front_left_wheel`/`front_right_wheel`/`rear_left_wheel`/`rear_right_wheel` 좌표축이 URDF에 지정한 위치(전후 ±1.3m, 좌우 ±0.75m)대로 정확히 배치된 걸 확인함 — `Global Status: Ok`, 에러 없음. `joint_state_publisher_gui`의 슬라이더로 조향 조인트를 움직이면 RViz에서 해당 바퀴 좌표축이 실제로 회전하는 것도 확인.
+**RViz로 직접 가시화**(`ros2_control/urdf/display.launch.py` + `chrono_vehicle.rviz`): `robot_state_publisher`+`joint_state_publisher_gui`+`rviz2`를 한 번에 띄움. 처음엔 `<visual>` 형상이 아예 없는 URDF라 `TF` 좌표축만 보였는데(`base_link`/바퀴 4개, URDF에 지정한 위치대로 정확히 배치 확인), **간단한 박스/실린더 형상을 추가해달라는 요청을 받아서** `simple_vehicle.py`가 실제로 쓰는 치수·색상을 그대로 옮겨 넣음:
+- 섀시: `<box size="2.6 1.6 0.4"/>`, `chassis_z = WHEEL_RADIUS(0.32) + SUSPENSION_TRAVEL_REST(0.32) + CHASSIS_CG_HEIGHT(0.55) = 1.19`(임의 값 아님), 빨간색(`0.75 0.1 0.1`, `simple_vehicle.py`의 4륜 차체 색과 동일)
+- 바퀴 4개: `<cylinder radius="0.32" length="0.22"/>`, 검은색 — URDF `<cylinder>`는 항상 로컬 Z축이라 `rpy="1.5708 0 0"`(X축으로 90도)로 회전시켜 Y축(구름 방향)에 맞춤, Chrono의 `ChBodyEasyCylinder(ChAxis::Y, ...)`와 동일한 정렬
+
+`<inertial>`/`<collision>`은 안 넣음 — 이 URDF로 물리 시뮬레이션을 돌릴 게 아니라(물리는 전부 FMU 안 Chrono가 담당), 순수 시각화·`ros2_control` 연결용이라 불필요. 실제로 다시 띄워서 확인한 결과: **빨간 섀시 박스 + 검은 바퀴 4개**가 정확한 위치에 렌더링됨(`Global Status: Ok`, 스크린샷으로 확인). `joint_state_publisher_gui`의 슬라이더로 조향 조인트를 움직이면 바퀴가 실제로 회전하는 것도 확인.
 
 ```bash
 source /opt/ros/humble/setup.bash

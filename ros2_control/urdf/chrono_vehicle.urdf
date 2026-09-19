@@ -3,14 +3,20 @@
 
   <!--
     Step 3 of the ros2_control prep plan (see README.md, "ros2_control 준비"
-    sections): a MINIMAL URDF — joint topology + <ros2_control> tags only,
-    no visual/collision geometry — for the 4-wheel car case
-    (fmu/cpp/native_vehicle_fmu/, not the 6x6 truck yet). This isn't meant
-    for RViz/Gazebo rendering, just to give controller_manager/pluginlib
-    something to load ChronoFmuSystemInterface against. Not yet tested
-    end-to-end (that needs step 4's plugin + step 6's launch file) — this
-    is XML-validated (check_urdf) but not yet loaded by an actual
-    controller_manager.
+    sections): a MINIMAL URDF — joint topology + <ros2_control> tags, for
+    the 4-wheel car case (fmu/cpp/native_vehicle_fmu/, not the 6x6 truck
+    yet). The point is giving controller_manager/pluginlib something to
+    load ChronoFmuSystemInterface against, not RViz/Gazebo rendering — so
+    no <inertial> or <collision> (no physics runs on this URDF; Chrono
+    already does all the physics, inside the FMU). <visual> geometry WAS
+    added below (simple boxes/cylinders, purely cosmetic) so RViz's
+    RobotModel display shows an actual vehicle shape instead of just TF
+    axes — same box/cylinder dimensions simple_vehicle.py's make_vehicle()
+    actually uses (CHASSIS_DIMS, WHEEL_RADIUS/WIDTH), not arbitrary shapes.
+    Not yet tested end-to-end with a real controller_manager (that needs
+    step 4's plugin + step 6's launch file) — this is XML-validated
+    (check_urdf) and visually confirmed in RViz (base_link + wheel frames
+    at the right positions, now with real vehicle-shaped geometry too).
 
     Joint layout matches vehicle_native.fmu's FL/FR/RL/RR corners and its
     actual model constants (WHEELBASE=2.6, TRACK=1.5, WHEEL_RADIUS=0.32 in
@@ -32,11 +38,68 @@
     requirement concrete.
   -->
 
-  <link name="base_link"/>
-  <link name="front_left_wheel"/>
-  <link name="front_right_wheel"/>
-  <link name="rear_left_wheel"/>
-  <link name="rear_right_wheel"/>
+  <material name="chassis_red">
+    <color rgba="0.75 0.1 0.1 1.0"/>
+  </material>
+  <material name="wheel_dark">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+
+  <!-- Chassis box: CHASSIS_DIMS=(2.6, 1.6, 0.4) from simple_vehicle.py, at
+       chassis_z = WHEEL_RADIUS(0.32) + SUSPENSION_TRAVEL_REST(0.32) +
+       CHASSIS_CG_HEIGHT(0.55) = 1.19, matching make_vehicle()'s actual
+       resting height above the wheel-axle line (base_link, at z=0, sits at
+       wheel-center height — see the wheel joints' z=0.32 origins below). -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 1.19" rpy="0 0 0"/>
+      <geometry>
+        <box size="2.6 1.6 0.4"/>
+      </geometry>
+      <material name="chassis_red"/>
+    </visual>
+  </link>
+
+  <!-- Wheel cylinders: WHEEL_RADIUS=0.32, WHEEL_WIDTH=0.22. URDF <cylinder>
+       is always local-Z-axis, so rpy="1.5708 0 0" (90 deg about X) points
+       it along Y instead — the rolling axis, matching
+       ChBodyEasyCylinder(ChAxis::Y, ...) in vehicle_native.cpp. -->
+  <link name="front_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="front_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="rear_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="rear_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
 
   <!-- Front axle: steering joints (revolute about Z, matching vehicle_native.cpp's
        knuckle->wheel steer axis). ackermann_steering_controller computes the
