@@ -644,6 +644,39 @@ ros2 launch ros2_control/urdf/display.launch.py
 
 **빌드 중 걸린 것**: 처음엔 `ros2 run robot_state_publisher robot_state_publisher --ros-args -p robot_description:="$(cat ...)"`처럼 URDF 전체를 CLI 인자로 직접 넘기려다가, 여러 줄짜리 XML 내용 때문에 ROS의 인자 파서가 깨짐(`Couldn't parse parameter override rule`) — launch 파일의 `Command`/`ParameterValue` 치환으로 파일 내용을 제대로 읽어오는 표준 방식으로 바꿔서 해결.
 
+### ros2_control 준비 4a단계: `ChronoFmuSystemInterface` 기본 배선
+
+`hardware_interface::SystemInterface`를 상속하는 실제 플러그인 클래스(`ros2_control/chrono_ros2_control/`)를 작성. `on_init()`이 URDF의 `fmu_dir` 파라미터로 `fmu_client_open()`을 호출하고, `export_state_interfaces()`/`export_command_interfaces()`가 조인트별 `StateInterface`/`CommandInterface`를 내보내고, `read()`/`write()`가 각각 `fmu_client_get_real`/`set_real`+`do_step`을 호출함. 아직 `plugin.xml`/`package.xml`/`CMakeLists.txt`(colcon 패키지)는 없음 — 그건 5번. 이번 단계는 순수 소스 코드 + 로컬 검증까지.
+
+**아직 안 풀린 것 두 개 — 숨기지 않고 코드에 명시적으로 표시**:
+1. **4b (속도→토크)**: 3단계에서 발견한 대로 rear wheel의 커맨드 인터페이스는 `velocity`인데 FMU의 `drive_torque_rear` 입력은 토크임. 지금은 커맨드된 속도를 그냥 저장만 해두고 FMU엔 아무것도 안 보냄 — `drive_torque_rear`는 FMU 자체 기본값(`260.0`, `fmu_client_open()`이 건드리지 않음)에 계속 머물러 있어서, 최소한 `do_step()`은 차가 움직이는 상태로 계속 돌아감. `speed_mps`로부터 미끄럼 없다고 가정한 근사 각속도(`speed_mps / WHEEL_RADIUS`)를 양쪽 뒷바퀴 상태로 똑같이 내보내는 것도 근사임(FMU에 바퀴별 각속도 출력이 없어서) — 실제 P 제어기는 4b에서.
+2. **4c (조향 입력 폭)**: URDF는 좌/우 독립된 `position` 커맨드 2개인데 FMU는 공유 `steer_deg` 입력 1개뿐이라, 지금은 두 커맨드를 평균 내서 보냄(근사, 최종 설계 아님).
+
+**로컬 검증** (colcon/`controller_manager` 없이, 2단계의 `fmu_client_cpp_check.cpp`와 같은 패턴): `test/chrono_fmu_system_interface_check.cpp`가 실제 `hardware_interface::parse_control_resources_from_urdf()`로 진짜 `chrono_vehicle.urdf`를 파싱해서 진짜 `HardwareInfo`를 얻고, `ChronoFmuSystemInterface`를 직접 인스턴스화해 `on_init`→`export_*`→(`write`+`read`) 500스텝(1초 분량)을 돌림. 빌드는 g++ 수동 `-l` 나열 대신 `find_package(hardware_interface)`가 내보내는 실제 CMake 타겟(`hardware_interface::hardware_interface`)에 기대는 작은 `CMakeLists.txt`로 함 — ROS2 패키지들의 실제 transitive 링크 의존성을 하나하나 추측할 필요가 없어서 훨씬 안정적.
+
+```bash
+source /opt/ros/humble/setup.bash
+cd ros2_control/chrono_ros2_control
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release && make
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./chrono_fmu_system_interface_check ../../urdf/chrono_vehicle.urdf
+```
+
+예상대로 **`OMSimulator`/`fmu_client_cpp_check`와 똑같은 `libstdc++` ABI 문제**가 또 나왔고(같은 `LD_PRELOAD`로 해결 — 4/7단계에서 재발할 거라고 메모리에 미리 적어뒀던 그대로), 그 외엔 한 번에 통과함:
+
+```
+parsed hardware 'ChronoVehicleSystem' (4 joints) from URDF
+on_init OK
+exported 4 state_interfaces, 4 command_interfaces
+after 500 steps (1.000s sim time):
+  front_left_steering_joint/position = 0.150000
+  front_right_steering_joint/position = 0.150000
+  rear_left_wheel_joint/velocity = 3.665542
+  rear_right_wheel_joint/velocity = 3.665542
+```
+
+`front_left_steering_joint`에만 0.3 rad를 커맨드했는데 양쪽 다 0.15 rad로 나온 건 버그가 아니라 위 4c 평균 근사가 그대로 작동한 것(0.3과 0.0의 평균). 뒷바퀴 속도가 양쪽 다 같은 값인 것도 4b 근사(둘 다 `speed_mps`에서 유도)가 그대로 작동한 것 — 둘 다 문서화된 placeholder 동작.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
