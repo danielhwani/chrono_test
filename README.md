@@ -631,6 +631,15 @@ check_urdf ros2_control/urdf/chrono_vehicle.urdf
 xmllint --noout ros2_control/urdf/chrono_vehicle.urdf
 ```
 
+**RViz로 직접 가시화**(`ros2_control/urdf/display.launch.py` + `chrono_vehicle.rviz`): `robot_state_publisher`+`joint_state_publisher_gui`+`rviz2`를 한 번에 띄움. 시각 형상(`<visual>`)이 없는 URDF라 `RobotModel` 디스플레이엔 아무것도 안 보이지만, `TF` 디스플레이로 `base_link`/`front_left_wheel`/`front_right_wheel`/`rear_left_wheel`/`rear_right_wheel` 좌표축이 URDF에 지정한 위치(전후 ±1.3m, 좌우 ±0.75m)대로 정확히 배치된 걸 확인함 — `Global Status: Ok`, 에러 없음. `joint_state_publisher_gui`의 슬라이더로 조향 조인트를 움직이면 RViz에서 해당 바퀴 좌표축이 실제로 회전하는 것도 확인.
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 launch ros2_control/urdf/display.launch.py
+```
+
+**빌드 중 걸린 것**: 처음엔 `ros2 run robot_state_publisher robot_state_publisher --ros-args -p robot_description:="$(cat ...)"`처럼 URDF 전체를 CLI 인자로 직접 넘기려다가, 여러 줄짜리 XML 내용 때문에 ROS의 인자 파서가 깨짐(`Couldn't parse parameter override rule`) — launch 파일의 `Command`/`ParameterValue` 치환으로 파일 내용을 제대로 읽어오는 표준 방식으로 바꿔서 해결.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
