@@ -95,7 +95,7 @@ python slip_demo.py --switch-time 4.0
 - **동역학**: FMU로 래핑.
   1. **`pythonfmu`** (진행 중, `fmu/` 디렉터리): 순수 Python이라 Chrono/C++을 새로 빌드할 필요 없음. 실행 쪽에 Python 런타임이 있어야 하는 게 유일한 제약.
   2. Chrono 공식 `chrono_fmi` export 모듈 자체는 conda `pychrono` 바이너리에 없음. 다만 **"Chrono를 C++에서 쓰려면 소스 빌드가 필요하다"는 건 틀렸다는 게 나중에 밝혀짐** — conda `chrono` env 안에 Chrono의 C++ 헤더/라이브러리(`libChrono_core.so` 등)가 이미 들어 있어서, 그걸 직접 링크하는 손수 FMI2 C++ 래퍼로 우회 성공함. 자세한 내용은 아래 "완성: 네이티브 FMU 안에서 진짜 ChSystemNSC 호출" 섹션 참고.
-- **제어**: ros_control 스타일 — 아직 미착수.
+- **제어**: `ros_control`(ROS1, EOL)이 아니라 **`ros2_control`**로 방향을 잡음 — 이 머신엔 ROS2 Humble이 이미 설치돼 있음(`/opt/ros/humble`). 구상: `diff_drive_controller`/`ackermann_steering_controller` 같은 표준 컨트롤러 → `command_interfaces`(조향각, 바퀴별 토크) → 커스텀 `hardware_interface::SystemInterface` 플러그인(`ChronoFmuSystemInterface`) → 같은 프로세스 안에서 `fmi2SetReal()`→`fmi2DoStep()`→`fmi2GetReal()` 직접 호출 → `vehicle_native.fmu`. `SystemInterface`는 그냥 `pluginlib`이 로드하는 C++ 클래스라, `fmu_driver.c`가 이미 하고 있는 `dlopen`+FMI2 직접 호출을 거의 그대로 재사용 가능 — 아직 미착수.
 
 **진행 상황**: `fmu/` 아래에 pythonfmu 툴체인 자체를 검증하는 토이 FMU(`free_fall_fmu.py`, 자유낙하 적분기)를 먼저 만들어 빌드→로드→시뮬레이션이 실제로 동작하는지 확인 완료. (이후 이 틀에 실제 차량 동역학을 넣는 작업까지 완료 — "## 실제 차량을 FMU로 감싸기" 섹션 참고. 아래부터 여기까지는 전부 그 전 단계, 토이 바운싱볼 모델로 툴체인 자체를 검증하던 기록.)
 
@@ -492,6 +492,29 @@ fmpy로 같은 dt(0.005)를 맞춰 6초를 돌려보면 `chassis_x/y`, `yaw_deg`
 **`OMSimulator`로 실제 구동 — 진짜 차량 물리가 Modelica master의 slave로 동작함**: 위 명령 그대로 `exit 0`, `result.csv`에 직진 가속(steer_deg 기본값 0이라 입력 안 주면 직진, t=6s에 x≈21.4m, speed≈7.1m/s로 물리적으로 타당)이 정상적으로 찍힘. 바운싱볼에서 이미 증명된 "네이티브 C++ FMU는 Python 없이, 어떤 FMI master든(OMSimulator 포함) 코드 수정 없이 불러온다"는 게 실제 차량 규모(강체 10여 개, 조인트 20여 개, 접촉/서스펜션/디퍼렌셜)에서도 그대로 성립함을 확인.
 
 **다음**: `six_wheel`/`ackermann`/`empirical_tire`/`bumps_terrain`을 C++ 쪽에도 추가(파라미터로), Irrlicht 렌더링(아직 미검증인 `libChrono_irrlicht.so` 경로), OMEdit GUI에서 여전히 안 되는지 재확인(바운싱볼 때와 같은 한계일 가능성 높음, 재확인은 안 함).
+
+### `fmu_driver` 일반화 — 바운싱볼 전용에서 임의의 FMU로
+
+지금까지 `fmu_driver`는 출력 변수 이름이 `h`/`v`로, 입력을 아예 못 넣는 걸로 하드코딩돼 있었음(바운싱볼 전용) — 차량 FMU는 출력이 `chassis_x`/`yaw_deg`/... 고 입력도 `steer_deg`/`drive_torque`가 있어서 그대로는 못 씀. 두 가지를 추가함(기존 호출은 전부 그대로 동작 — 옵션 안 주면 여전히 `h`,`v` 기본값):
+
+```
+--outputs name1,name2,...   매 스텝 읽어서 출력할 Real 변수들 (기본값: h,v)
+--set name=value            Real 입력값 하나를 초기화 직후, 스텝 시작 전에 한 번 설정
+                             (반복 가능 — 여러 입력을 각각 --set으로)
+```
+
+```bash
+cd fmu/cpp/native_fmu/driver
+./fmu_driver ../../native_vehicle_fmu csv 5 0.002 \
+    --set steer_deg=15 --set drive_torque=260 \
+    --outputs chassis_x,chassis_y,yaw_deg,speed_mps
+```
+
+**의도적으로 안 넣은 것**: 스텝마다 바뀌는 입력(조향 램프 같은 시나리오)은 지원 안 함 — `--set`은 처음 한 번 설정하고 끝까지 고정임. 그런 제어 로직(램프, PID, 시퀀싱)은 이 범용 드라이버가 아니라 "제어 레이어"(ros2_control 등)가 할 일이라고 선을 그음.
+
+**회귀 확인**: 옵션 없이 기존처럼 `./fmu_driver .. bench/csv/paced ...`를 다시 돌려서 바운싱볼 FMU 결과가 전과 완전히 같은 수치로 나오는 것 확인(`h=3.278573 v=-5.615244` 등, 이전 세션 결과와 동일).
+
+**부산물**: 차량 FMU의 첫 순수 벤치마크 수치도 나옴(`bench` 모드) — **~585μs/step, 약 3.4x realtime**. 강체 10여 개 + 조인트 20여 개 + 접촉/서스펜션이 있는 모델이라 바운싱볼(수 ns/step)과는 자릿수가 완전히 다르지만, 목표 스텝(2ms)보다는 여전히 3배 이상 빨라서 `paced` 모드도 별문제 없이 맞춰 돔(p50/p95 ≈ 2000.0/2000.6us, p999은 그래도 약간 더 벌어짐 — 여유가 줄어든 만큼 자연스러운 결과).
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

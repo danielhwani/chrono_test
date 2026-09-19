@@ -17,9 +17,26 @@
  * That completes the fully-native path: native FMU + native driver.
  *
  * Usage:
- *   ./fmu_driver <extracted-fmu-dir> bench  <sim_time_s> <dt_s>
- *   ./fmu_driver <extracted-fmu-dir> csv    <sim_time_s> <dt_s>
- *   ./fmu_driver <extracted-fmu-dir> paced  <sim_time_s> <dt_s> [fifo <priority>] [--json-out PATH]
+ *   ./fmu_driver <extracted-fmu-dir> bench  <sim_time_s> <dt_s> [options]
+ *   ./fmu_driver <extracted-fmu-dir> csv    <sim_time_s> <dt_s> [options]
+ *   ./fmu_driver <extracted-fmu-dir> paced  <sim_time_s> <dt_s> [fifo <priority>] [options]
+ *
+ *   options:
+ *     --outputs name1,name2,...   Real variables to read/print each step
+ *                                  (default: h,v -- the bouncing-ball models'
+ *                                  outputs, kept as the default so existing
+ *                                  invocations are unaffected)
+ *     --set name=value            set a Real input once, right after
+ *                                  exitInitializationMode, before stepping
+ *                                  starts (repeatable, e.g. two --set flags
+ *                                  for two different inputs). Held constant
+ *                                  for the whole run -- there's no per-step
+ *                                  time-varying input support here; a real
+ *                                  driving scenario (a steer ramp, a control
+ *                                  loop) belongs in a purpose-built driver or
+ *                                  control layer, not this generic one.
+ *     --json-out PATH             (paced only) write rt_results/*.json-
+ *                                  schema percentiles, see below
  *
  * <extracted-fmu-dir> is a directory containing modelDescription.xml and
  * binaries/linux64/<modelIdentifier>.so -- i.e. an FMU already unzipped (a
@@ -31,18 +48,19 @@
  * This driver is deliberately NOT specific to our own model: it reads the
  * FMU's own modelDescription.xml at startup to find the GUID, the
  * modelIdentifier (so it knows which .so to dlopen), and the value
- * references of the two variables it knows how to drive/print: "h" and
- * "v". Any FMI2 Co-Simulation FMU exposing Real variables literally named
- * "h" and "v" works here unmodified -- e.g. fmu/cpp/native_fmu/ (our
- * hand-written one) or fmu/modelica/BouncingBallModelica.fmu (built by
- * OpenModelica's omc), which don't share a GUID or variable numbering with
- * each other at all.
+ * references of whichever Real variables --outputs/--set name. Any FMI2
+ * Co-Simulation FMU works here unmodified as long as the variables named
+ * exist -- e.g. fmu/cpp/native_fmu/ or fmu/modelica/BouncingBallModelica.fmu
+ * (h, v -- the default), or fmu/cpp/native_vehicle_fmu/ (steer_deg,
+ * drive_torque as --set inputs; chassis_x, yaw_deg, etc. as --outputs),
+ * which don't share a GUID or variable numbering with any of the others.
  *
  *   bench -- flat-out fmi2DoStep loop (no pacing), reports ns/step and RTF.
  *            Compare directly against `bouncing_ball --bench` to see the
  *            overhead the FMI function-pointer layer adds over raw C++.
- *   csv   -- prints time,h,v rows to stdout (redirect to a file to compare
- *            against bouncing_ball.cpp --csv / the Python FMU's output).
+ *   csv   -- prints time,<outputs...> rows to stdout (redirect to a file to
+ *            compare against bouncing_ball.cpp --csv / the Python FMU's
+ *            output, for the default h,v case).
  *   paced -- actually paces fmi2DoStep to wall-clock time, same yield()-based
  *            wait as bouncing_ball.cpp --paced (see that file's comment for
  *            why: sleep_until() alone had multi-ms tail latency here, a pure
@@ -50,6 +68,11 @@
  *            and can write the same JSON schema as rt_results/*.json via
  *            --json-out, so this overlays directly with the existing Python
  *            (fmpy) and no-FMU C++ paced results in plot_rt_comparison.py.
+ *
+ * Examples:
+ *   ./fmu_driver ../../native_vehicle_fmu csv 3 0.002 \
+ *       --set steer_deg=15 --set drive_torque=260 \
+ *       --outputs chassis_x,chassis_y,yaw_deg,speed_mps
  *
  * Build: see ./build.sh (needs -ldl).
  */
@@ -212,6 +235,18 @@ static int find_attr_value(const char* search_from, const char* attr_name, char*
     return 1;
 }
 
+/* Find a ScalarVariable's value reference by its `name="..."` attribute
+ * (used for both --outputs and --set, and for the default h/v case). */
+static int find_var_vr(const char* xml, const char* var_name, fmi2ValueReference* out_vr) {
+    char needle[128];
+    snprintf(needle, sizeof(needle), "name=\"%s\"", var_name);
+    const char* tag = strstr(xml, needle);
+    char vr_str[32];
+    if (!tag || !find_attr_value(tag, "valueReference", vr_str, sizeof(vr_str))) return 0;
+    *out_vr = (fmi2ValueReference)atoi(vr_str);
+    return 1;
+}
+
 /* Real callback functions instead of NULL: our own hand-written FMU tolerates
  * a NULL fmi2CallbackFunctions* (falls back to malloc), but the FMI2 spec
  * doesn't actually make these optional, and OpenModelica-generated FMUs
@@ -249,23 +284,56 @@ static char* read_whole_file(const char* path) {
     return buf;
 }
 
+#define MAX_VARS 16
+
 int main(int argc, char** argv) {
-    /* pull "--json-out PATH" out wherever it appears, then treat the rest positionally */
+    /* pull "--json-out PATH", "--outputs a,b,c" and (repeatable) "--set
+     * name=value" out wherever they appear, then treat the rest positionally */
     char* json_out = NULL;
+    char* outputs_arg = NULL;
+    char* set_names[MAX_VARS];
+    double set_values[MAX_VARS];
+    int n_sets = 0;
+
     int argn = argc - 1;
     char** args = argv + 1;
-    for (int i = 0; i < argn; ++i) {
+    for (int i = 0; i < argn; ) {
         if (strcmp(args[i], "--json-out") == 0 && i + 1 < argn) {
             json_out = args[i + 1];
             for (int j = i; j + 2 < argn; ++j) args[j] = args[j + 2];
             argn -= 2;
-            break;
+        } else if (strcmp(args[i], "--outputs") == 0 && i + 1 < argn) {
+            outputs_arg = args[i + 1];
+            for (int j = i; j + 2 < argn; ++j) args[j] = args[j + 2];
+            argn -= 2;
+        } else if (strcmp(args[i], "--set") == 0 && i + 1 < argn) {
+            if (n_sets >= MAX_VARS) {
+                fprintf(stderr, "too many --set flags (max %d)\n", MAX_VARS);
+                return 1;
+            }
+            char* eq = strchr(args[i + 1], '=');
+            if (!eq) {
+                fprintf(stderr, "--set expects name=value, got '%s'\n", args[i + 1]);
+                return 1;
+            }
+            size_t name_len = (size_t)(eq - args[i + 1]);
+            char* name = malloc(name_len + 1);
+            memcpy(name, args[i + 1], name_len);
+            name[name_len] = '\0';
+            set_names[n_sets] = name;
+            set_values[n_sets] = atof(eq + 1);
+            n_sets++;
+            for (int j = i; j + 2 < argn; ++j) args[j] = args[j + 2];
+            argn -= 2;
+        } else {
+            ++i;
         }
     }
 
     if (argn < 4) {
         fprintf(stderr, "usage: %s <extracted-fmu-dir> {bench|csv|paced} <sim_time_s> <dt_s> "
-                        "[fifo priority] [--json-out PATH]\n", argv[0]);
+                        "[fifo priority] [--outputs a,b,c] [--set name=value ...] [--json-out PATH]\n",
+                argv[0]);
         return 1;
     }
     const char* fmu_dir = args[0];
@@ -300,20 +368,47 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    char guid[128], model_id[128], vr_h_str[32], vr_v_str[32];
+    char guid[128], model_id[128];
     const char* cosim_tag = strstr(xml, "<CoSimulation");
-    const char* h_tag = strstr(xml, "name=\"h\"");
-    const char* v_tag = strstr(xml, "name=\"v\"");
     if (!find_attr_value(xml, "guid", guid, sizeof(guid)) ||
-        !cosim_tag || !find_attr_value(cosim_tag, "modelIdentifier", model_id, sizeof(model_id)) ||
-        !h_tag || !find_attr_value(h_tag, "valueReference", vr_h_str, sizeof(vr_h_str)) ||
-        !v_tag || !find_attr_value(v_tag, "valueReference", vr_v_str, sizeof(vr_v_str))) {
-        fprintf(stderr, "could not parse guid/modelIdentifier/h/v out of %s -- this driver "
-                        "expects Real variables literally named 'h' and 'v'\n", xml_path);
+        !cosim_tag || !find_attr_value(cosim_tag, "modelIdentifier", model_id, sizeof(model_id))) {
+        fprintf(stderr, "could not parse guid/modelIdentifier out of %s\n", xml_path);
         free(xml);
         return 1;
     }
-    fmi2ValueReference vr_hv[2] = {(fmi2ValueReference)atoi(vr_h_str), (fmi2ValueReference)atoi(vr_v_str)};
+
+    /* --outputs a,b,c (default: h,v, for backward compatibility with the
+     * bouncing-ball models this driver was originally written for) */
+    const char* default_outputs[2] = {"h", "v"};
+    char* output_names[MAX_VARS];
+    int n_outputs = 0;
+    if (outputs_arg) {
+        char* tok = strtok(outputs_arg, ",");
+        while (tok && n_outputs < MAX_VARS) {
+            output_names[n_outputs++] = tok;
+            tok = strtok(NULL, ",");
+        }
+    } else {
+        for (int i = 0; i < 2; ++i) output_names[n_outputs++] = (char*)default_outputs[i];
+    }
+
+    fmi2ValueReference vr_out[MAX_VARS];
+    for (int i = 0; i < n_outputs; ++i) {
+        if (!find_var_vr(xml, output_names[i], &vr_out[i])) {
+            fprintf(stderr, "could not find output variable '%s' in %s\n", output_names[i], xml_path);
+            free(xml);
+            return 1;
+        }
+    }
+
+    fmi2ValueReference vr_set[MAX_VARS];
+    for (int i = 0; i < n_sets; ++i) {
+        if (!find_var_vr(xml, set_names[i], &vr_set[i])) {
+            fprintf(stderr, "could not find --set variable '%s' in %s\n", set_names[i], xml_path);
+            free(xml);
+            return 1;
+        }
+    }
     free(xml);
 
     char so_path[1024];
@@ -324,7 +419,13 @@ int main(int argc, char** argv) {
         fprintf(stderr, "dlopen(%s) failed: %s\n", so_path, dlerror());
         return 1;
     }
-    fprintf(stderr, "model: %s  guid=%s  h=vr%s v=vr%s\n", model_id, guid, vr_h_str, vr_v_str);
+    fprintf(stderr, "model: %s  guid=%s  outputs:", model_id, guid);
+    for (int i = 0; i < n_outputs; ++i) fprintf(stderr, " %s=vr%u", output_names[i], vr_out[i]);
+    if (n_sets > 0) {
+        fprintf(stderr, "  set:");
+        for (int i = 0; i < n_sets; ++i) fprintf(stderr, " %s=%g", set_names[i], set_values[i]);
+    }
+    fprintf(stderr, "\n");
 
     char abs_dir[PATH_MAX];
     char resource_uri[PATH_MAX + 32] = "";
@@ -354,9 +455,12 @@ int main(int argc, char** argv) {
     fmi2SetupExperiment(c, 0, 0.0, 0.0, 0, 0.0);
     fmi2EnterInitializationMode(c);
     fmi2ExitInitializationMode(c);
+    if (n_sets > 0) {
+        fmi2SetReal(c, vr_set, n_sets, set_values);
+    }
 
     long n_steps = (long)(sim_time / dt);
-    fmi2Real hv[2];
+    fmi2Real out_vals[MAX_VARS];
 
     if (is_bench) {
         double t0 = now_s();
@@ -366,14 +470,16 @@ int main(int argc, char** argv) {
             t += dt;
         }
         double elapsed = now_s() - t0;
-        fmi2GetReal(c, vr_hv, 2, hv);
+        fmi2GetReal(c, vr_out, n_outputs, out_vals);
         double ns_per_step = elapsed * 1e9 / n_steps;
         double rtf = sim_time / elapsed;
         printf("fmu_driver bench: %ld steps, dt=%g, sim_time=%g s\n", n_steps, dt, sim_time);
         printf("  wall elapsed: %.6f s\n", elapsed);
         printf("  ns/step:      %.2f\n", ns_per_step);
         printf("  RTF:          %.1fx realtime\n", rtf);
-        printf("  final state:  h=%.6f v=%.6f (printed so -O2 can't dead-code-eliminate the loop)\n", hv[0], hv[1]);
+        printf("  final state:  ");
+        for (int i = 0; i < n_outputs; ++i) printf("%s=%.6f ", output_names[i], out_vals[i]);
+        printf("(printed so -O2 can't dead-code-eliminate the loop)\n");
     } else if (is_paced) {
         /* Actually pace fmi2DoStep to wall-clock time -- same yield()-based
          * wait as bouncing_ball.cpp --paced (sleep_until had multi-ms tail
@@ -429,8 +535,10 @@ int main(int argc, char** argv) {
         long n_over_2x = 0;
         for (long i = 0; i < n_steps; ++i) if (periods[i] > 2 * dt) ++n_over_2x;
         printf("  iterations > 2x target: %ld (%.3f%%)\n", n_over_2x, 100.0 * n_over_2x / n_steps);
-        fmi2GetReal(c, vr_hv, 2, hv);
-        printf("  final state: h=%.6f v=%.6f (printed so -O2 can't dead-code-eliminate the loop)\n", hv[0], hv[1]);
+        fmi2GetReal(c, vr_out, n_outputs, out_vals);
+        printf("  final state: ");
+        for (int i = 0; i < n_outputs; ++i) printf("%s=%.6f ", output_names[i], out_vals[i]);
+        printf("(printed so -O2 can't dead-code-eliminate the loop)\n");
 
         if (json_out) {
             char label[96];
@@ -445,14 +553,21 @@ int main(int argc, char** argv) {
         free(sorted);
     } else {
         double t = 0.0;
-        printf("time,h,v\n");
-        fmi2GetReal(c, vr_hv, 2, hv);
-        printf("%.6f,%.6f,%.6f\n", t, hv[0], hv[1]);
+        printf("time");
+        for (int i = 0; i < n_outputs; ++i) printf(",%s", output_names[i]);
+        printf("\n");
+
+        fmi2GetReal(c, vr_out, n_outputs, out_vals);
+        printf("%.6f", t);
+        for (int i = 0; i < n_outputs; ++i) printf(",%.6f", out_vals[i]);
+        printf("\n");
         for (long i = 0; i < n_steps; ++i) {
             fmi2DoStep(c, t, dt, 1);
             t += dt;
-            fmi2GetReal(c, vr_hv, 2, hv);
-            printf("%.6f,%.6f,%.6f\n", t, hv[0], hv[1]);
+            fmi2GetReal(c, vr_out, n_outputs, out_vals);
+            printf("%.6f", t);
+            for (int j = 0; j < n_outputs; ++j) printf(",%.6f", out_vals[j]);
+            printf("\n");
         }
     }
 
