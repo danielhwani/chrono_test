@@ -723,6 +723,37 @@ steer_fr_deg_in           input [deg]  독립_front_steer!=0일 때만 사용
 
 `ChronoFmuSystemInterface`의 `write()`도 평균 로직을 걷어내고 좌/우 커맨드를 각각 `steer_fl_deg_in`/`steer_fr_deg_in`으로 그대로 전달하도록 수정, `on_init()`에서 `independent_front_steer=1.0`을 한 번 세팅. 검증 하네스로 재확인: 왼쪽에만 0.3 rad 커맨드했을 때 `front_left_steering_joint/position = 0.300000`, `front_right_steering_joint/position = 0.000000`으로 **평균 없이 정확히** 반영됨(이전엔 둘 다 0.15로 나왔던 것과 대조).
 
+### ros2_control 준비 5단계: 진짜 ament 패키지로 전환 (`plugin.xml`/`package.xml`)
+
+4단계까지는 `CMakeLists.txt`가 로컬 검증 전용(colcon 없이 `cmake ..`/`make`만)이었음. 이번엔 진짜 colcon 빌드 가능한 ament 패키지로 전환 — `pluginlib_export_plugin_description_file()`로 플러그인을 실제로 등록해서 `controller_manager`가 찾아 쓸 수 있게 함.
+
+**구조는 추측하지 않고 실제 공식 예제로 확인**: `ros-controls/ros2_control_demos`(humble 브랜치) `example_2`의 `package.xml`/`CMakeLists.txt`를 GitHub에서 직접 받아 대조. 한 가지 짚을 만한 발견 — `package.xml`의 `<export>`에는 `<hardware_interface plugin="...">` 같은 태그가 **전혀 없음**. 플러그인 등록은 순수하게 `CMakeLists.txt`의 `pluginlib_export_plugin_description_file(hardware_interface plugin.xml)` 매크로 호출 하나로 끝남(빌드/설치 시 ament 인덱스에 자동 등록됨). 처음에 package.xml에 그 태그를 추가했다가 실제 예제와 다르다는 걸 확인하고 제거함.
+
+```bash
+cd ros2_control
+source /opt/ros/humble/setup.bash
+colcon build --packages-select chrono_ros2_control
+```
+
+설치된 파일 중 핵심: `install/chrono_ros2_control/share/ament_index/resource_index/hardware_interface__pluginlib__plugin/chrono_ros2_control` → 내용이 `share/chrono_ros2_control/plugin.xml`을 가리킴. 이게 `controller_manager`가 "`chrono_ros2_control/ChronoFmuSystemInterface`"라는 이름만 보고 실제 `.so`/XML을 찾아내는 메커니즘.
+
+**빌드 중 걸린 것 두 개**:
+1. `chrono_fmu_system_interface_check`(로컬 검증용 실행 파일)에 `ament_target_dependencies`와 plain-signature `target_link_libraries`를 섞어 쓰다가 CMake 에러(`All uses of target_link_libraries with a target must be either all-keyword or all-plain`) — keyword 시그니처(`PUBLIC`)로 통일해서 해결.
+2. **`PLUGINLIB_EXPORT_CLASS` 매크로를 빠뜨렸었음** — ament 인덱스 등록 자체는 되지만(파일은 만들어짐), 실제로 `pluginlib::ClassLoader`가 그 이름으로 인스턴스를 생성하려 하면 RTTI 기반 팩토리에 클래스가 등록 안 돼 있어서 실패했을 것. 아래 실제 검증으로 이 문제를 직접 잡아냄.
+
+**검증 — 자체 하네스가 아니라 진짜 `pluginlib::ClassLoader`로**: `chrono_fmu_system_interface_check`(직접 C++로 인스턴스화)는 이미 통과하고 있었지만, 그건 pluginlib의 실제 검색/팩토리 메커니즘을 전혀 안 거침. 그래서 별도의 임시 프로그램으로 진짜 `pluginlib::ClassLoader<hardware_interface::SystemInterface> loader("hardware_interface", "hardware_interface::SystemInterface"); loader.createSharedInstance("chrono_ros2_control/ChronoFmuSystemInterface")`를 호출해봄 — 처음엔 `PLUGINLIB_EXPORT_CLASS`가 없어서 실패했고(위 2번), 매크로 추가 후 재빌드하니:
+
+```
+pluginlib successfully created an instance: N19chrono_ros2_control24ChronoFmuSystemInterfaceE
+```
+
+`controller_manager`가 step 7에서 할 것과 동일한 경로(ament 인덱스 → `plugin.xml` → `dlopen` → RTTI 팩토리)로 실제 인스턴스 생성까지 성공 — 이게 없었으면 step 7에서야 이 버그를 발견했을 것.
+
+`chrono_fmu_system_interface_check`도 새 colcon 빌드 트리에서 그대로 재확인:
+```bash
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./build/chrono_ros2_control/chrono_fmu_system_interface_check urdf/chrono_vehicle.urdf
+```
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

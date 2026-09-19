@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>chrono_ros2_control</name>
+  <version>0.1.0</version>
+  <description>
+    hardware_interface::SystemInterface plugin (ChronoFmuSystemInterface)
+    driving a Project Chrono vehicle FMU (fmu/cpp/native_vehicle_fmu) via
+    fmu_client. See ../../README.md, "ros2_control 준비" sections.
+  </description>
+  <maintainer email="danielhwani@gmail.com">daniel</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

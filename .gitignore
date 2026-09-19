@@ -23,4 +23,6 @@ fmu/*.csv
 fmu/cpp/native_vehicle_fmu/binaries/
 fmu/cpp/native_vehicle_fmu/*.fmu
 fmu/cpp/native_vehicle_fmu/*.csv
-ros2_control/chrono_ros2_control/build/
+ros2_control/build/
+ros2_control/install/
+ros2_control/log/

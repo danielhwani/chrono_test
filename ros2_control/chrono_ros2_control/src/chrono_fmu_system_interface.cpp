@@ -216,3 +216,7 @@ ChronoFmuSystemInterface::~ChronoFmuSystemInterface()
 }
 
 }  // namespace chrono_ros2_control
+
+#include "pluginlib/class_list_macros.hpp"
+PLUGINLIB_EXPORT_CLASS(
+  chrono_ros2_control::ChronoFmuSystemInterface, hardware_interface::SystemInterface)

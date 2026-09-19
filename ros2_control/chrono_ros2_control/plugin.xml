@@ -1,0 +1,13 @@
+<library path="chrono_fmu_system_interface">
+
+  <class name="chrono_ros2_control/ChronoFmuSystemInterface"
+         type="chrono_ros2_control::ChronoFmuSystemInterface"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      hardware_interface::SystemInterface backed by a Project Chrono FMU
+      (fmu/cpp/native_vehicle_fmu, via fmu_client), driving the 4-wheel
+      vehicle model declared in ros2_control/urdf/chrono_vehicle.urdf.
+    </description>
+  </class>
+
+</library>
