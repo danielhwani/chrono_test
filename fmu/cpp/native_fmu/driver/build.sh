@@ -14,3 +14,11 @@ echo "  ./fmu_driver .. bench 10 0.002                      # our own native_fmu
 echo "  ./fmu_driver ../../../modelica/extracted paced 10 0.002   # any FMU with Real h/v, e.g. Modelica-built"
 echo "  ./fmu_driver ../../native_vehicle_fmu csv 5 0.002 --set steer_deg=15 --set drive_torque_rear=260 \\"
 echo "               --outputs chassis_x,chassis_y,yaw_deg,speed_mps   # any FMU, arbitrary inputs/outputs"
+
+# Step-2 check (ros2_control prep): fmu_client called from real C++, not
+# just C -- proves fmu_client.h's extern "C" wrapping actually works before
+# building a whole pluginlib plugin around it. Same fmu_client.c object,
+# compiled with g++ this time.
+g++ -O2 -o fmu_client_cpp_check fmu_client_cpp_check.cpp fmu_client.c -ldl
+echo "Built fmu/cpp/native_fmu/driver/fmu_client_cpp_check (fmu_client.h called from C++)"
+echo "  ./fmu_client_cpp_check ../../native_vehicle_fmu"

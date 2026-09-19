@@ -87,7 +87,7 @@ static char* read_whole_file(const char* path) {
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char* buf = malloc((size_t)size + 1);
+    char* buf = (char*)malloc((size_t)size + 1);
     if (fread(buf, 1, (size_t)size, f) != (size_t)size) {
         fclose(f);
         free(buf);
@@ -194,7 +194,11 @@ FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name) {
     fmi2EnterInitializationMode(component);
     fmi2ExitInitializationMode(component);
 
-    FmuClient* client = malloc(sizeof(FmuClient));
+    /* explicit casts on this and read_whole_file()'s malloc() are for C++
+     * compatibility (implicit void* conversion is a C-only convenience) --
+     * this file gets compiled with g++ too, by fmu_client_cpp_check's build
+     * step, to prove fmu_client.h's extern "C" wrapping actually works. */
+    FmuClient* client = (FmuClient*)malloc(sizeof(FmuClient));
     client->handle = handle;
     client->xml = xml;
     strncpy(client->guid, guid, sizeof(client->guid) - 1);

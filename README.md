@@ -593,6 +593,23 @@ gcc -O2 -o fmu_driver fmu_driver.c fmu_client.c -ldl   # build.sh가 이미 이�
 
 **회귀 검증**: 이 세션에서 다뤘던 FMU 전부(바운싱볼 손물리/Chrono/Modelica, 차량 4륜/6x6 bench·csv·paced·`--json-out`)를 리팩터링 전후로 비교 — **전부 숫자가 정확히 똑같음**(예: 차량 bench `chassis_x=2.311297`, paced `chassis_x=0.580022` — 이전 세션 기록과 일치). 순수 리팩터링이라 동작 변화 없음을 확인.
 
+### ros2_control 준비 2단계: `fmu_client`를 진짜 C++에서 호출해보기 (`fmu_client_cpp_check.cpp`)
+
+`ChronoFmuSystemInterface`(ros2_control 플러그인)는 C++ 클래스라 `fmu_client`를 C++ 쪽에서 부르게 되는데, `pluginlib`/`hardware_interface` 복잡도까지 한 번에 얹기 전에 "C++에서 이 라이브러리를 제대로 호출할 수 있는가"만 먼저 따로 확인함. 최소 C++ 프로그램(`fmu_client_cpp_check.cpp`)을 만들어서, 실제 플러그인이 쓸 패턴(`std::vector<double>`로 상태/명령 저장, `open` 한 번 → 매 스텝 `set_real`→`do_step`→`get_real` 반복 → `close` 한 번)을 미리 연습함.
+
+```bash
+cd fmu/cpp/native_fmu/driver
+./build.sh   # fmu_client_cpp_check도 같이 빌드됨(build.sh에 g++ 라인 추가)
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./fmu_client_cpp_check ../../native_vehicle_fmu
+```
+
+**빌드 중 걸린 것 두 개** (전부 C→C++ 컴파일 차이 때문, 로직 문제 아님):
+1. 주석 안에 `export_*/`라고 썼다가 컴파일 에러 — `*/`가 어디 있든(주석 안 설명 텍스트라도) C/C++ 컴파일러는 그 지점에서 블록 주석이 끝난 걸로 봄. 흔한 함정이라 기록해둠.
+2. `fmu_client.c`의 `malloc()` 반환값(`void*`)을 별도 캐스팅 없이 `char*`/`FmuClient*`에 대입하던 부분 — C에선 암묵적으로 되지만 C++는 명시적 캐스팅을 요구함. `(char*)malloc(...)` 식으로 캐스팅 추가(C 쪽 동작엔 전혀 영향 없음, C++로도 컴파일되게만 고친 것).
+3. **`OMSimulator` 때와 똑같은 `libstdc++` ABI 문제**가 또 나옴 — `g++`로 컴파일하면 시스템 `libstdc++`를 링크하는데, `vehicle_native.so`(Chrono)는 conda의 더 새 버전이 필요해서 충돌. 같은 `LD_PRELOAD` 해법 그대로 적용. (`fmu_driver`는 `gcc`로 컴파일해서 이 문제가 아예 없었음 — C++ 런타임을 아예 안 낌.)
+
+**검증**: 4륜/2WD(`steer=10`)와 6x6(`rear=300 mid=200 front=100`) 두 시나리오 다 돌려서, **C(`fmu_driver`)로 얻었던 수치와 소수점까지 정확히 일치**함을 확인(`chassis_x=2.311297`/`yaw_deg=-10.534322`, `chassis_x=6.189703`/`speed_mps=4.122292`) — `fmu_client.h`의 `extern "C"` 래핑이 실제로 C++에서도 문제없이 동작한다는 직접적인 증거.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
