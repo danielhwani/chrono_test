@@ -416,6 +416,9 @@ def main():
                          help="ramp duration [s] to reach the target steer angle")
     parser.add_argument("--six-wheel", action="store_true",
                          help="use the 3-axle (6-wheel) truck layout instead of the 4-wheel car")
+    parser.add_argument("--four-wheel-drive", action="store_true",
+                         help="also drive the front (steered) axle -- 4WD on the 4-wheel car, "
+                              "or a true 6x6 (all 3 axles driven) combined with --six-wheel")
     parser.add_argument("--ackermann", action="store_true",
                          help="split the commanded steer angle into separate L/R wheel angles "
                               "via Ackermann geometry, instead of applying it to both equally")
@@ -438,7 +441,7 @@ def main():
     sys.GetSolver().AsIterative().SetMaxIterations(150)
 
     chassis, wheels, springs, motors, steer_functions, throttle_functions = make_vehicle(
-        sys, six_wheel=args.six_wheel, terrain=args.terrain
+        sys, six_wheel=args.six_wheel, terrain=args.terrain, four_wheel_drive=args.four_wheel_drive
     )
     susp_keys = sorted(springs.keys())
     ackermann_wheelbase = WHEELBASE_6W if args.six_wheel else WHEELBASE
