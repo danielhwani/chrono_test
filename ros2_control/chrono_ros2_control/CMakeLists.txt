@@ -77,6 +77,18 @@ target_link_libraries(chrono_fmu_system_interface_check PUBLIC
 )
 ament_target_dependencies(chrono_fmu_system_interface_check PUBLIC hardware_interface)
 
+# Also from step 5's own verification -- see the file's own comment for why
+# this is a meaningfully different check than chrono_fmu_system_interface_check
+# above (it goes through pluginlib's real discovery/factory path, not a
+# direct #include). Needs the just-built plugin + its ament index entry to
+# already be installed to be found, so it's meant to be run against
+# install/, after sourcing install/setup.bash -- see README's step 5
+# section for the exact command.
+add_executable(pluginlib_load_check
+  test/pluginlib_load_check.cpp
+)
+ament_target_dependencies(pluginlib_load_check PUBLIC pluginlib hardware_interface)
+
 ament_export_targets(export_chrono_fmu_system_interface HAS_LIBRARY_TARGET)
 ament_export_dependencies(${THIS_PACKAGE_INCLUDE_DEPENDS})
 ament_package()

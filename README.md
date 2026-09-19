@@ -741,15 +741,23 @@ colcon build --packages-select chrono_ros2_control
 1. `chrono_fmu_system_interface_check`(로컬 검증용 실행 파일)에 `ament_target_dependencies`와 plain-signature `target_link_libraries`를 섞어 쓰다가 CMake 에러(`All uses of target_link_libraries with a target must be either all-keyword or all-plain`) — keyword 시그니처(`PUBLIC`)로 통일해서 해결.
 2. **`PLUGINLIB_EXPORT_CLASS` 매크로를 빠뜨렸었음** — ament 인덱스 등록 자체는 되지만(파일은 만들어짐), 실제로 `pluginlib::ClassLoader`가 그 이름으로 인스턴스를 생성하려 하면 RTTI 기반 팩토리에 클래스가 등록 안 돼 있어서 실패했을 것. 아래 실제 검증으로 이 문제를 직접 잡아냄.
 
-**검증 — 자체 하네스가 아니라 진짜 `pluginlib::ClassLoader`로**: `chrono_fmu_system_interface_check`(직접 C++로 인스턴스화)는 이미 통과하고 있었지만, 그건 pluginlib의 실제 검색/팩토리 메커니즘을 전혀 안 거침. 그래서 별도의 임시 프로그램으로 진짜 `pluginlib::ClassLoader<hardware_interface::SystemInterface> loader("hardware_interface", "hardware_interface::SystemInterface"); loader.createSharedInstance("chrono_ros2_control/ChronoFmuSystemInterface")`를 호출해봄 — 처음엔 `PLUGINLIB_EXPORT_CLASS`가 없어서 실패했고(위 2번), 매크로 추가 후 재빌드하니:
+**검증 — 자체 하네스가 아니라 진짜 `pluginlib::ClassLoader`로**: `chrono_fmu_system_interface_check`(직접 C++로 인스턴스화)는 이미 통과하고 있었지만, 그건 pluginlib의 실제 검색/팩토리 메커니즘을 전혀 안 거침. 그래서 진짜 `pluginlib::ClassLoader<hardware_interface::SystemInterface> loader("hardware_interface", "hardware_interface::SystemInterface"); loader.createSharedInstance("chrono_ros2_control/ChronoFmuSystemInterface")`를 호출하는 프로그램을 따로 만듦(`test/pluginlib_load_check.cpp`, 처음엔 `/tmp`에 임시로 만들었다가 재검증용으로 계속 쓸모 있어서 패키지에 정식으로 편입) — 처음엔 `PLUGINLIB_EXPORT_CLASS`가 없어서 실패했고(위 2번), 매크로 추가 후 재빌드하니 통과. `pluginlib`/`hardware_interface` 의존성은 `ament_target_dependencies()`가 자동으로 처리해줘서, 수동으로 `-lclass_loader -lconsole_bridge -lrcpputils -lrcutils -lament_index_cpp -ltinyxml2` 같은 링커 플래그를 하나씩 추측할 필요가 없었음(임시 버전 만들 땐 그렇게 했었음).
+
+```bash
+cd ros2_control
+source /opt/ros/humble/setup.bash
+colcon build --packages-select chrono_ros2_control
+source install/setup.bash
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./build/chrono_ros2_control/pluginlib_load_check
+```
 
 ```
 pluginlib successfully created an instance: N19chrono_ros2_control24ChronoFmuSystemInterfaceE
 ```
 
-`controller_manager`가 step 7에서 할 것과 동일한 경로(ament 인덱스 → `plugin.xml` → `dlopen` → RTTI 팩토리)로 실제 인스턴스 생성까지 성공 — 이게 없었으면 step 7에서야 이 버그를 발견했을 것.
+`controller_manager`가 step 7에서 할 것과 동일한 경로(ament 인덱스 → `plugin.xml` → `dlopen` → RTTI 팩토리)로 실제 인스턴스 생성까지 성공 — 이게 없었으면 step 7에서야 이 버그를 발견했을 것. **`install/setup.bash`를 먼저 source해야** pluginlib이 우리 패키지를 ament 인덱스에서 찾을 수 있음(`AMENT_PREFIX_PATH`에 잡혀야 함) — 안 하면 `createSharedInstance()`가 `pluginlib::LibraryLoadException`으로 실패함.
 
-`chrono_fmu_system_interface_check`도 새 colcon 빌드 트리에서 그대로 재확인:
+`chrono_fmu_system_interface_check`도 그대로 재확인:
 ```bash
 LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./build/chrono_ros2_control/chrono_fmu_system_interface_check urdf/chrono_vehicle.urdf
 ```
