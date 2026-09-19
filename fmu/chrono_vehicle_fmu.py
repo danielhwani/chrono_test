@@ -25,12 +25,26 @@ Runtime control is `input` variables the master drives every step (replacing
 simple_vehicle.py main()'s own steer_angle_deg() ramp and fixed DRIVE_TORQUE
 constant, which were conveniences for the standalone demo -- a real FMI
 slave should let the master command these directly):
-    steer_deg          commanded front-wheel steer angle, degrees
-    drive_torque        nominal rear-wheel drive torque, N*m
-    drive_torque_front  nominal front-wheel drive torque, N*m (only takes
+    steer_deg          commanded front-wheel steer angle, degrees (applies to
+                        both front wheels alike, or split via ackermann)
+    drive_torque        nominal rear-axle drive torque, N*m
+    drive_torque_front  nominal front-axle drive torque, N*m (only takes
                         effect when four_wheel_drive is true; default 0.0
                         is physically equivalent to no front motor at all,
                         so leaving it unset is backward compatible)
+    drive_torque_mid    nominal mid-axle drive torque, N*m -- only exists
+                        (six_wheel's mid axle is always driven, unlike the
+                        front) when six_wheel is true; default equals
+                        DRIVE_TORQUE, matching the value the mid axle
+                        already got before this input existed, so leaving
+                        it unset is backward compatible. This is the same
+                        "each axle controlled independently" pattern as
+                        drive_torque_front, extended from 2 axles to 3 for
+                        six_wheel -- the ros2_control controller still only
+                        ever sends one traction reference; independent
+                        per-axle control is a model/FMU-level capability,
+                        not something ros2_control's standard steering
+                        controllers expose on their own.
 
 Outputs mirror vehicle_log.csv's columns (position/orientation/speed/actual
 steer angles), so this can be validated against the exact same signals the
@@ -93,6 +107,7 @@ class ChronoVehicle(Fmi2Slave):
         self.steer_deg = 0.0
         self.drive_torque = DRIVE_TORQUE
         self.drive_torque_front = 0.0
+        self.drive_torque_mid = DRIVE_TORQUE
 
         # ---- outputs ----
         self.chassis_x = 0.0
@@ -118,6 +133,9 @@ class ChronoVehicle(Fmi2Slave):
         self.register_variable(
             Real("drive_torque_front", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
         )
+        self.register_variable(
+            Real("drive_torque_mid", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
+        )
         for name in ("chassis_x", "chassis_y", "chassis_z", "roll_deg", "pitch_deg", "yaw_deg",
                      "speed_mps", "steer_FL_deg", "steer_FR_deg"):
             self.register_variable(
@@ -132,6 +150,8 @@ class ChronoVehicle(Fmi2Slave):
         self._throttle_functions = None
         self._front_motors = None
         self._front_throttle_functions = None
+        self._mid_motors = None
+        self._mid_throttle_functions = None
         self._rear_motors = None
         self._rear_throttle_functions = None
         self._tire_accumulators = None
@@ -155,15 +175,22 @@ class ChronoVehicle(Fmi2Slave):
             setup_empirical_tire_wheels(self._wheels) if self.empirical_tire else None
         )
 
-        # Split the driven corners into "front" (only present when
-        # four_wheel_drive is set) and "rear" (everything else -- R alone
-        # for the 4-wheel car, M+R for six_wheel, unchanged from before)
-        # so do_step() can apply drive_torque_front/drive_torque
-        # independently instead of one shared value for every driven axle.
-        self._front_motors = {k: v for k, v in self._motors.items() if k.startswith("F")}
-        self._front_throttle_functions = {k: v for k, v in self._throttle_functions.items() if k.startswith("F")}
-        self._rear_motors = {k: v for k, v in self._motors.items() if not k.startswith("F")}
-        self._rear_throttle_functions = {k: v for k, v in self._throttle_functions.items() if not k.startswith("F")}
+        # Split the driven corners by axle prefix (F/M/R) so do_step() can
+        # apply drive_torque_front/drive_torque_mid/drive_torque
+        # independently per axle instead of one shared value for everything
+        # -- F only exists as a driven group when four_wheel_drive is set, M
+        # only exists at all when six_wheel is set (and is always driven
+        # when present). Each dict is simply empty when that axle doesn't
+        # apply, and apply_differential() on an empty dict is a harmless
+        # no-op, so this works unchanged for every axle-layout combination.
+        def _group(prefix):
+            motors = {k: v for k, v in self._motors.items() if k.startswith(prefix)}
+            throttle = {k: v for k, v in self._throttle_functions.items() if k.startswith(prefix)}
+            return motors, throttle
+
+        self._front_motors, self._front_throttle_functions = _group("F")
+        self._mid_motors, self._mid_throttle_functions = _group("M")
+        self._rear_motors, self._rear_throttle_functions = _group("R")
 
     def do_step(self, current_time: float, step_size: float) -> bool:
         if self.ackermann:
@@ -178,6 +205,7 @@ class ChronoVehicle(Fmi2Slave):
                 fn.SetConstant(cur_steer_rad)
 
         apply_differential(self._rear_motors, self._rear_throttle_functions, self.drive_torque)
+        apply_differential(self._mid_motors, self._mid_throttle_functions, self.drive_torque_mid)
         apply_differential(self._front_motors, self._front_throttle_functions, self.drive_torque_front)
         if self._tire_accumulators is not None:
             apply_tire_forces(self._wheels, self._tire_accumulators)

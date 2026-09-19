@@ -536,6 +536,23 @@ drive_torque_front   신규, 전륜 명목 토크 (four_wheel_drive=false면 안
 
 **뜻밖의 발견 (버그 아님, 정직하게 기록)**: `four_wheel_drive=True`인데 `drive_torque_front=0`으로 주면, `four_wheel_drive=False`(전륜 모터 자체가 없음)와 **완전히 같지는 않음**(6초 뒤 yaw 기준 약 0.03도 차이). 원인은 전륜에도 이미 있던 `ChLinkLockRevolute`(스핀 조인트)와 새로 얹은 `ChLinkMotorRotationTorque`(구동 모터)가 같은 두 바디 사이에 같은 프레임으로 겹쳐서, 토크가 정확히 0이라도 구속조건 개수가 늘어나 150회 고정 반복(BARZILAIBORWEIN) 솔버의 근사해가 아주 살짝 달라지기 때문으로 보임 — `four_wheel_drive=False`(전륜 모터가 아예 안 생성됨)일 때는 기존 동작과 완벽하게 일치하는 걸 이미 확인했으니, 이건 "구조 자체를 켜는 것"의 부작용이지 로직 버그는 아님.
 
+### 6x6 — 3축 독립 토크 (Python FMU만, 1단계)
+
+6바퀴 트럭도 "3개 축을 별도로 제어"해야 한다는 요청 — 4WD 때 쓴 "전/후 독립 토크" 패턴을 그대로 전/중/후 3축으로 확장. 범위를 두 단계로 나눔: **1단계(이번)**는 `chrono_vehicle_fmu.py`(Python FMU)에만 추가, **2단계(미착수)**는 `vehicle_native.cpp`에 애초에 없던 `six_wheel` 자체를 새로 포팅하는 큰 작업이라 따로 미룸.
+
+```
+drive_torque         후축(R) 명목 토크 — 기존 그대로
+drive_torque_mid     중축(M) 명목 토크, 신규 — six_wheel일 때만 존재, 기본값이 DRIVE_TORQUE(260)라
+                      건드리지 않으면 전과 똑같이 M도 R과 같은 토크로 구동됨(하위호환)
+drive_torque_front   전축(F) 명목 토크 — 4WD 때 추가된 것 그대로, four_wheel_drive일 때만 적용
+```
+
+**ros2_control과의 관계**: `ackermann_steering_controller`는 리스트 길이 제약이 최대 4개까지 허용(`size_lt<..., 5>`로 검증되는 걸 실제 설치된 소스에서 확인 — 6바퀴도 물리적으론 들어감)라 여러 조인트 이름을 받을 순 있지만, **트랙션 레퍼런스는 하나만 계산해서 리스트의 모든 조인트에 그대로 방송**하는 구조라 축별로 다른 값을 컨트롤러 차원에서 독립적으로 명령하는 기능은 없음. 그래서 4WD 때와 같은 결론: **표준 컨트롤러는 값 하나만 보내고, `ChronoFmuSystemInterface`가 내부에서 축별로 뿌려주는 방식**을 3축으로도 그대로 적용.
+
+**검증**: 기존 6륜 데모(`--six-wheel`, M+R을 한 번에 같은 토크로 돌리던 옛 방식)와 새 FMU에서 `drive_torque_mid`를 안 건드린 경우를 비교 — **완전히 일치**(위치/yaw 전부 소수점까지 같음). 전/중/후에 각각 다른 토크(100/200/300 N·m)를 줘도 정상적으로 독립 반영되는 것도 확인.
+
+**부수적으로 발견한 것**: 이번 검증 과정에서 pythonfmu+Chrono 조합의 기존에 알려진 cleanup 크래시(`corrupted double-linked list`, 결과 출력 다 끝난 뒤 프로세스 종료 시점에 발생, 검증 결과 자체엔 영향 없음)가 차량 FMU에서도 나타나는 걸 처음 확인함 — `fmu/chrono_bouncing_ball_fmu.py`에서 이미 기록해둔 것과 같은 종류의 문제로 보임(원인 미조사).
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
