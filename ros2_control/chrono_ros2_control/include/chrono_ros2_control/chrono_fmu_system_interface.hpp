@@ -8,14 +8,24 @@
 // (velocity), 4-wheel car only -- not six_wheel (deferred on purpose, see
 // memory: finish the 4-wheel pipeline through step 7 first).
 //
-// Two known gaps, deliberately NOT hidden behind a fake-looking
-// implementation -- see the matching comments in the .cpp:
-//   - 4b (not done yet): rear wheel command_interfaces are `velocity`, but
-//     the FMU's drive_torque_rear input is a torque. No velocity->torque
-//     control loop exists yet.
+// One known gap left, deliberately NOT hidden behind a fake-looking
+// implementation -- see the matching comment in the .cpp:
 //   - 4c (not done yet): the URDF has two independent front steering
 //     command_interfaces, but the FMU has one shared steer_deg input. The
 //     two commands are averaged for now, not treated as the final design.
+//
+// 4b (rear wheel velocity->torque) is now done: a plain proportional
+// controller (kVelocityKp, clamped to kMaxDriveTorqueRear) converts the
+// rear axle's commanded angular velocity into drive_torque_rear. Gain and
+// clamp were picked empirically via the check harness (see README), not
+// derived from first principles -- revisit if step 7's real
+// controller_manager run shows oscillation/instability. No integral or
+// derivative term by design (the plan's own scope was "e.g. a P
+// controller"). Deliberately architected the same way as steer_deg's
+// averaging and the 4WD/6x6 drive_torque_front/mid/rear inputs: ONE
+// axle-level value goes into the FMU, and apply_differential() inside the
+// FMU still owns the L/R split -- this plugin never talks to individual
+// wheels, only axles, matching that established pattern.
 #ifndef CHRONO_ROS2_CONTROL__CHRONO_FMU_SYSTEM_INTERFACE_HPP_
 #define CHRONO_ROS2_CONTROL__CHRONO_FMU_SYSTEM_INTERFACE_HPP_
 
@@ -83,6 +93,17 @@ private:
   // state_interfaces, since the FMU has no per-wheel omega output (see the
   // read() comment).
   static constexpr double kWheelRadius = 0.32;
+
+  // 4b: rear axle velocity->torque P controller. N*m per (rad/s) of error;
+  // empirically picked (see README's 4b section for the tuning run), not
+  // derived analytically.
+  static constexpr double kVelocityKp = 80.0;
+  // Clamp on the commanded torque -- guards the FMU's fixed-iteration-count
+  // NSC solver against a runaway P term (this project already saw the
+  // solver's approximate solution get perturbed by a much smaller
+  // constraint change once, see 4WD's zero-torque-front-motor finding in
+  // memory). Roughly 3x the FMU's own default drive_torque_rear (260.0).
+  static constexpr double kMaxDriveTorqueRear = 800.0;
 };
 
 }  // namespace chrono_ros2_control

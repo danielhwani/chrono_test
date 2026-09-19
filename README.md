@@ -677,6 +677,31 @@ after 500 steps (1.000s sim time):
 
 `front_left_steering_joint`에만 0.3 rad를 커맨드했는데 양쪽 다 0.15 rad로 나온 건 버그가 아니라 위 4c 평균 근사가 그대로 작동한 것(0.3과 0.0의 평균). 뒷바퀴 속도가 양쪽 다 같은 값인 것도 4b 근사(둘 다 `speed_mps`에서 유도)가 그대로 작동한 것 — 둘 다 문서화된 placeholder 동작.
 
+### ros2_control 준비 4b단계: 속도→토크 P 제어기
+
+3단계에서 발견한 대로 rear wheel의 커맨드 인터페이스는 `velocity`(rad/s)인데 FMU의 `drive_torque_rear` 입력은 토크(N·m). `write()`에 순수 비례(P) 제어기를 추가: `drive_torque_rear = Kp * (commanded_velocity - measured_velocity)`, `kMaxDriveTorqueRear`(800 N·m, FMU 기본값 260의 약 3배)로 클램프. 클램프를 넣은 이유는 임의로 큰 토크가 고정 150회 반복 NSC 솔버를 흔들 수 있다는 걸 4WD 작업 때 이미 한 번 겪었기 때문(제로 토크 모터 하나만 추가해도 요각이 미세하게 흔들렸던 그 사례).
+
+좌/우 뒷바퀴 커맨드 속도는 `steer_deg`처럼 평균 내서 축(axle) 레벨 하나의 값으로 합쳐지고, FMU 내부의 `apply_differential()`이 여전히 L/R 분배를 담당 — 4WD/6x6의 `drive_torque_front/_mid/_rear` 패턴과 완전히 같은 구조(플러그인은 축 단위로만 말하고, 바퀴별 분배는 FMU가 함).
+
+**Kp=80.0(N·m per rad/s)은 경험적으로 고른 값**(1차원적 유도 없음) — 검증 하네스로 실제 수렴 여부를 직접 찍어봄:
+
+```bash
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./chrono_fmu_system_interface_check ../../urdf/chrono_vehicle.urdf
+```
+
+뒷바퀴 둘 다 5.0 rad/s로 커맨드하고 6초간 1초 간격으로 찍은 결과:
+
+```
+t=1.0s:  ...velocity=3.383647
+t=2.0s:  ...velocity=4.508169
+t=3.0s:  ...velocity=4.806016
+t=4.0s:  ...velocity=4.847881
+t=5.0s:  ...velocity=4.868993
+t=6.0s:  ...velocity=4.889749
+```
+
+**진동/발산 없이 매끄럽게 수렴**하지만 **정상상태 오차가 남음**(목표 5.0 대비 6초 뒤 4.89, ~2%) — 적분항이 없는 순수 P 제어기라서 구름저항 같은 지속적 부하가 있으면 완전히 0으로 못 줄이는 게 정상적인 특성(버그 아님). 7단계에서 실제 `controller_manager`로 돌려볼 때 이 정도 오차가 문제가 되면 그때 I 항 추가를 고려.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

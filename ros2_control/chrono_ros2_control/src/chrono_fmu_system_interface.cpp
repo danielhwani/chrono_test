@@ -143,19 +143,37 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
   const double steer_deg =
     (steer_count > 0 ? (steer_sum_rad / steer_count) : 0.0) * kDegPerRad;
 
-  // 4b placeholder: rear wheel command_interfaces are `velocity`
-  // (joint.command, rad/s), but drive_torque_rear is a torque input and no
-  // velocity->torque control loop exists yet. Deliberately NOT sending
-  // joint.command anywhere -- drive_torque_rear is left untouched at the
-  // FMU's own <Real start="260.0"/> default (fmu_client_open() never calls
-  // SetReal on it) so do_step() still produces a moving vehicle for
-  // read()/write() wiring tests. The commanded velocity is stored in
-  // joint.command (available for step 4b to pick up) but currently unused.
+  // 4b: rear wheel command_interfaces are `velocity` (joint.command, rad/s);
+  // drive_torque_rear is a torque input. Both rear wheels' commanded
+  // velocities funnel into one axle-level target the same way the two
+  // front steering commands funnel into one steer_deg above --
+  // apply_differential() inside the FMU still owns the L/R split, this
+  // plugin only ever talks in axle-level quantities. Measured velocity is
+  // read from joints_ state (set by read() from the previous cycle's
+  // speed_mps -- both rear wheel states are already the same no-slip
+  // approximation, so either one works as the axle's measured velocity).
+  double vel_cmd_sum = 0.0;
+  int vel_cmd_count = 0;
+  double vel_measured = 0.0;
+  for (const auto & joint : joints_) {
+    if (joint.interface == hardware_interface::HW_IF_VELOCITY) {
+      vel_cmd_sum += joint.command;
+      ++vel_cmd_count;
+      vel_measured = joint.state;
+    }
+  }
+  const double vel_cmd = (vel_cmd_count > 0 ? vel_cmd_sum / vel_cmd_count : 0.0);
+  double drive_torque_rear = kVelocityKp * (vel_cmd - vel_measured);
+  if (drive_torque_rear > kMaxDriveTorqueRear) {
+    drive_torque_rear = kMaxDriveTorqueRear;
+  } else if (drive_torque_rear < -kMaxDriveTorqueRear) {
+    drive_torque_rear = -kMaxDriveTorqueRear;
+  }
 
-  FmuValueReference vrs[1] = {vr_steer_deg_};
-  double values[1] = {steer_deg};
-  if (!fmu_client_set_real(fmu_, vrs, 1, values)) {
-    RCLCPP_ERROR(logger(), "fmu_client_set_real(steer_deg) failed");
+  FmuValueReference vrs[2] = {vr_steer_deg_, vr_drive_torque_rear_};
+  double values[2] = {steer_deg, drive_torque_rear};
+  if (!fmu_client_set_real(fmu_, vrs, 2, values)) {
+    RCLCPP_ERROR(logger(), "fmu_client_set_real(steer_deg, drive_torque_rear) failed");
     return hardware_interface::return_type::ERROR;
   }
 
