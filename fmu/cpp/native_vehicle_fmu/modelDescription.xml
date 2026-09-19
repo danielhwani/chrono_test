@@ -3,7 +3,7 @@
     fmiVersion="2.0"
     modelName="VehicleNative"
     guid="{c3d4e5f6-1a2b-4c8d-9e0f-1a2b3c4d5e6f}"
-    description="Native FMI2 C++ API vehicle backed by chrono::ChSystemNSC (4-wheel, rigid tire, flat terrain, parallel steering MVP), see fmu/cpp/native_vehicle_fmu/"
+    description="Native FMI2 C++ API vehicle backed by chrono::ChSystemNSC (4-wheel or 6-wheel via six_wheel, rigid tire, flat terrain, parallel steering MVP), see fmu/cpp/native_vehicle_fmu/"
     generationTool="hand-written"
     variableNamingConvention="flat">
 
@@ -53,6 +53,12 @@
       <Real start="0.0"/>
     </ScalarVariable>
     <ScalarVariable name="four_wheel_drive" valueReference="12" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="drive_torque_mid" valueReference="13" causality="input" variability="continuous">
+      <Real start="260.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="six_wheel" valueReference="14" causality="input" variability="continuous">
       <Real start="0.0"/>
     </ScalarVariable>
   </ModelVariables>

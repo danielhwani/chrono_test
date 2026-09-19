@@ -536,9 +536,9 @@ drive_torque_front   신규, 전륜 명목 토크 (four_wheel_drive=false면 안
 
 **뜻밖의 발견 (버그 아님, 정직하게 기록)**: `four_wheel_drive=True`인데 `drive_torque_front=0`으로 주면, `four_wheel_drive=False`(전륜 모터 자체가 없음)와 **완전히 같지는 않음**(6초 뒤 yaw 기준 약 0.03도 차이). 원인은 전륜에도 이미 있던 `ChLinkLockRevolute`(스핀 조인트)와 새로 얹은 `ChLinkMotorRotationTorque`(구동 모터)가 같은 두 바디 사이에 같은 프레임으로 겹쳐서, 토크가 정확히 0이라도 구속조건 개수가 늘어나 150회 고정 반복(BARZILAIBORWEIN) 솔버의 근사해가 아주 살짝 달라지기 때문으로 보임 — `four_wheel_drive=False`(전륜 모터가 아예 안 생성됨)일 때는 기존 동작과 완벽하게 일치하는 걸 이미 확인했으니, 이건 "구조 자체를 켜는 것"의 부작용이지 로직 버그는 아님.
 
-### 6x6 — 3축 독립 토크 (Python FMU만, 1단계)
+### 6x6 — 3축 독립 토크 (1단계: Python FMU)
 
-6바퀴 트럭도 "3개 축을 별도로 제어"해야 한다는 요청 — 4WD 때 쓴 "전/후 독립 토크" 패턴을 그대로 전/중/후 3축으로 확장. 범위를 두 단계로 나눔: **1단계(이번)**는 `chrono_vehicle_fmu.py`(Python FMU)에만 추가, **2단계(미착수)**는 `vehicle_native.cpp`에 애초에 없던 `six_wheel` 자체를 새로 포팅하는 큰 작업이라 따로 미룸.
+6바퀴 트럭도 "3개 축을 별도로 제어"해야 한다는 요청 — 4WD 때 쓴 "전/후 독립 토크" 패턴을 그대로 전/중/후 3축으로 확장. 범위를 두 단계로 나눔: **1단계(이번)**는 `chrono_vehicle_fmu.py`(Python FMU)에만 추가, **2단계**는 `vehicle_native.cpp`에 `six_wheel` 자체를 새로 포팅하는 것 — 바로 아래 별도 섹션에서 같은 세션에 이어서 완료함.
 
 ```
 drive_torque         후축(R) 명목 토크 — 기존 그대로
@@ -552,6 +552,21 @@ drive_torque_front   전축(F) 명목 토크 — 4WD 때 추가된 것 그대로
 **검증**: 기존 6륜 데모(`--six-wheel`, M+R을 한 번에 같은 토크로 돌리던 옛 방식)와 새 FMU에서 `drive_torque_mid`를 안 건드린 경우를 비교 — **완전히 일치**(위치/yaw 전부 소수점까지 같음). 전/중/후에 각각 다른 토크(100/200/300 N·m)를 줘도 정상적으로 독립 반영되는 것도 확인.
 
 **부수적으로 발견한 것**: 이번 검증 과정에서 pythonfmu+Chrono 조합의 기존에 알려진 cleanup 크래시(`corrupted double-linked list`, 결과 출력 다 끝난 뒤 프로세스 종료 시점에 발생, 검증 결과 자체엔 영향 없음)가 차량 FMU에서도 나타나는 걸 처음 확인함 — `fmu/chrono_bouncing_ball_fmu.py`에서 이미 기록해둔 것과 같은 종류의 문제로 보임(원인 미조사).
+
+### 6x6 — 2단계: `six_wheel`을 네이티브 C++로 포팅
+
+같은 세션에 이어서 2단계까지 완료 — `vehicle_native.cpp`에 `six_wheel`(구조 파라미터, `four_wheel_drive`와 같은 방식: `build()` 시점에 한 번만 읽는 0.0/1.0 입력)과 `drive_torque_mid`(중축 독립 토크)를 추가함.
+
+**설계**: 지금까지 코너 배열이 `Corner corners[4]`(FL,FR,RL,RR 고정 인덱스)였는데, `Corner corners[6]`으로 바꾸고 **인덱스 의미를 레이아웃과 무관하게 고정**했음(`0=FL 1=FR 2=ML 3=MR 4=RL 5=RR`) — 4륜일 땐 `corners[2]`/`[3]`(ML/MR)을 아예 안 만들고 기본 생성 상태(모든 `shared_ptr`가 null)로 비워둠. 이렇게 하면 `step()`의 후축 참조가 항상 `corners[4]`/`[5]`로 고정돼서, 6륜이냐 4륜이냐에 따라 매 스텝 인덱스를 다르게 계산할 필요가 없음. 섀시 질량/치수/축간거리도 `six_wheel` 여부에 따라 `simple_vehicle.py`의 `CHASSIS_MASS_6W`/`CHASSIS_DIMS_6W`/`WHEELBASE_6W`와 같은 값으로 분기.
+
+```bash
+cd fmu/cpp/native_vehicle_fmu
+./build.sh
+```
+
+**검증**: `validate_native_vehicle_fmu.py`를 4개 조합(4륜×2WD/4WD, 6륜×2WD/4WD=6x6)으로 전부 확장해서 pythonfmu FMU와 비교 — **넷 다 0.00e+00**, 6륜 포팅도 완벽히 정확함을 확인. `OMSimulator --mode=cs`로도 여전히 정상 로드/구동되는 것 재확인(디폴트 설정 기준 — CLI에서 개별 시작값을 오버라이드하는 옵션은 못 찾아서 `six_wheel=1`로 직접 켜서 도는 것까진 이번엔 확인 안 함, 필요하면 SSP 구성으로 가능할 것).
+
+이제 `fmu/chrono_vehicle_fmu.py`(Python)와 `fmu/cpp/native_vehicle_fmu/`(네이티브 C++) 둘 다 4륜/6륜, 2WD/4WD/6x6 전부 지원하고, 서로 bit-exact — ros2_control이 실제로 쓸 네이티브 C++ FMU가 6x6 트럭까지 커버하게 됨.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

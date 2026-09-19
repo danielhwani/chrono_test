@@ -5,29 +5,30 @@
  * and (per the same proof as the bouncing-ball case) is expected to be the
  * only version loadable by a non-Python FMI master like OMSimulator/Modelica.
  *
- * MVP SCOPE (first pass -- additive follow-ups noted in README, not here):
- *   - 4-wheel car only (no six_wheel option)
- *   - rigid tire model only (Bullet Coulomb contact, no empirical_tire)
- *   - flat terrain only (no bumps_terrain)
- *   - parallel steering only (no ackermann)
- * These are exactly simple_vehicle.py's defaults, so this reproduces the
- * default-config vehicle from make_vehicle(), just constructed directly in
- * C++ instead of via PyChrono. Model parameters (masses, dims, spring/
- * damper rates, etc.) are copied verbatim from simple_vehicle.py's module
- * constants.
+ * MVP SCOPE originally (first pass) was 4-wheel/rigid-tire/flat/parallel-
+ * steering only, matching simple_vehicle.py's defaults. Since then, two
+ * structural options were added on top (both mirroring the same-named
+ * fmu/chrono_vehicle_fmu.py parameters, both read once in build() like g/e/
+ * floor in the bouncing-ball model, so must be set before the first
+ * fmi2DoStep i.e. during initialization):
  *
- * four_wheel_drive is the one structural option this file DOES have (added
- * after the MVP, mirroring fmu/chrono_vehicle_fmu.py's parameter of the same
- * name): off by default (rear-only drive, bit-exact with every earlier
- * validation run), on adds a drive motor to the front (already-steered)
- * corners too -- same knuckle->wheel joint as steering, no conflict, exactly
- * like a real CV-jointed front driveshaft. Read once in build(), like g/e/
- * floor in the bouncing-ball model, so it must be set before the first
- * fmi2DoStep (i.e. during initialization).
+ *   four_wheel_drive: off by default (rear-only drive, bit-exact with every
+ *     earlier validation run), on adds a drive motor to the front
+ *     (already-steered) corners too -- same knuckle->wheel joint as
+ *     steering, no conflict, exactly like a real CV-jointed front
+ *     driveshaft.
+ *   six_wheel: off by default (4-wheel car, bit-exact with every earlier
+ *     validation run), on switches to the 3-axle truck layout (front
+ *     steered, mid+rear always driven, front driven too iff
+ *     four_wheel_drive) -- heavier chassis, longer wheelbase, same per-
+ *     corner constants otherwise. Still MVP-scoped: rigid tire model only,
+ *     flat terrain only, parallel steering only (no ackermann/
+ *     empirical_tire/bumps_terrain here yet -- those remain
+ *     pythonfmu-only, see fmu/chrono_vehicle_fmu.py).
  *
  * Variables (value references):
  *   0: steer_deg          input   [deg]   commanded front-wheel steer angle
- *   1: drive_torque       input   [N*m]   nominal rear-wheel drive torque
+ *   1: drive_torque       input   [N*m]   nominal rear-axle drive torque
  *   2: chassis_x          output  [m]
  *   3: chassis_y          output  [m]
  *   4: chassis_z          output  [m]
@@ -37,11 +38,18 @@
  *   8: speed_mps          output  [m/s]   sqrt(vx^2+vy^2)
  *   9: steer_FL_deg       output  [deg]
  *  10: steer_FR_deg       output  [deg]
- *  11: drive_torque_front input   [N*m]   nominal front-wheel drive torque
+ *  11: drive_torque_front input   [N*m]   nominal front-axle drive torque
  *                                          (only takes effect if
  *                                          four_wheel_drive != 0)
  *  12: four_wheel_drive   input   [0/1]   read once in build(); nonzero
  *                                          also drives the front axle
+ *  13: drive_torque_mid   input   [N*m]   nominal mid-axle drive torque
+ *                                          (only meaningful if six_wheel
+ *                                          != 0 -- the mid axle only
+ *                                          exists then, and is always
+ *                                          driven when present)
+ *  14: six_wheel          input   [0/1]   read once in build(); nonzero
+ *                                          switches to the 3-axle truck
  *
  * Build: see ../build.sh
  */
@@ -67,6 +75,9 @@ using namespace chrono;
 static const double G = -9.81;
 static const double CHASSIS_MASS = 1200.0;
 static const double CHASSIS_DIMS[3] = {2.6, 1.6, 0.4};
+static const double CHASSIS_MASS_6W = 2600.0;
+static const double CHASSIS_DIMS_6W[3] = {4.4, 1.8, 0.5};
+static const double WHEELBASE_6W = 3.4;
 static const double CHASSIS_CG_HEIGHT = 0.55;
 static const double WHEEL_MASS = 18.0;
 static const double WHEEL_RADIUS = 0.32;
@@ -123,12 +134,19 @@ struct Corner {
     double steer_deg_actual = 0.0;
 };
 
-// corner order: 0=FL 1=FR 2=RL 3=RR
+// corner order is FIXED regardless of layout: 0=FL 1=FR 2=ML 3=MR 4=RL 5=RR.
+// For the 4-wheel car (six_wheel off), corners[2]/[3] (ML/MR) are simply
+// never built -- left as default-constructed Corner{} (all null shared_ptrs)
+// -- so RL/RR always live at indices 4/5, not 2/3, in either layout. That
+// keeps step()'s indexing the same regardless of six_wheel instead of
+// needing to branch on layout every step.
 struct ModelInstance {
     fmi2Real steer_deg_in = 0.0;
     fmi2Real drive_torque_in = DRIVE_TORQUE_DEFAULT;
     fmi2Real drive_torque_front_in = 0.0;
     fmi2Real four_wheel_drive_in = 0.0;  // read once in build(); 0.0=off (default, rear-only)
+    fmi2Real drive_torque_mid_in = DRIVE_TORQUE_DEFAULT;
+    fmi2Real six_wheel_in = 0.0;         // read once in build(); 0.0=off (default, 4-wheel car)
 
     fmi2Real chassis_x = 0.0, chassis_y = 0.0, chassis_z = 0.0;
     fmi2Real roll_deg = 0.0, pitch_deg = 0.0, yaw_deg = 0.0;
@@ -137,7 +155,8 @@ struct ModelInstance {
 
     std::shared_ptr<ChSystemNSC> sys;
     std::shared_ptr<ChBody> chassis;
-    Corner corners[4];
+    Corner corners[6];
+    bool six_wheel = false;
     bool built = false;
 
     void build();
@@ -226,30 +245,40 @@ void ModelInstance::build() {
     ground->SetFixed(true);
     sys->Add(ground);
 
-    chassis = chrono_types::make_shared<ChBodyEasyBox>(CHASSIS_DIMS[0], CHASSIS_DIMS[1], CHASSIS_DIMS[2],
+    six_wheel = six_wheel_in != 0.0;
+    const double* chassis_dims = six_wheel ? CHASSIS_DIMS_6W : CHASSIS_DIMS;
+    double chassis_mass = six_wheel ? CHASSIS_MASS_6W : CHASSIS_MASS;
+    double wheelbase = six_wheel ? WHEELBASE_6W : WHEELBASE;
+
+    chassis = chrono_types::make_shared<ChBodyEasyBox>(chassis_dims[0], chassis_dims[1], chassis_dims[2],
                                                          500.0, true, false);
-    chassis->SetMass(CHASSIS_MASS);
+    chassis->SetMass(chassis_mass);
     chassis->SetInertiaXX(ChVector3d(
-        CHASSIS_MASS * (CHASSIS_DIMS[1] * CHASSIS_DIMS[1] + CHASSIS_DIMS[2] * CHASSIS_DIMS[2]) / 12,
-        CHASSIS_MASS * (CHASSIS_DIMS[0] * CHASSIS_DIMS[0] + CHASSIS_DIMS[2] * CHASSIS_DIMS[2]) / 12,
-        CHASSIS_MASS * (CHASSIS_DIMS[0] * CHASSIS_DIMS[0] + CHASSIS_DIMS[1] * CHASSIS_DIMS[1]) / 12));
+        chassis_mass * (chassis_dims[1] * chassis_dims[1] + chassis_dims[2] * chassis_dims[2]) / 12,
+        chassis_mass * (chassis_dims[0] * chassis_dims[0] + chassis_dims[2] * chassis_dims[2]) / 12,
+        chassis_mass * (chassis_dims[0] * chassis_dims[0] + chassis_dims[1] * chassis_dims[1]) / 12));
     double chassis_z = WHEEL_RADIUS + SUSPENSION_TRAVEL_REST + CHASSIS_CG_HEIGHT;
     chassis->SetPos(ChVector3d(0, 0, chassis_z));
     sys->Add(chassis);
 
-    // corner order: FL, FR, RL, RR -- front (x=+WHEELBASE/2) always steered;
-    // whether it's ALSO driven depends on four_wheel_drive_in (read once
-    // here, matching fmu/chrono_vehicle_fmu.py's structural four_wheel_drive
-    // parameter -- default off, so this stays bit-exact with the rear-only
-    // behavior every earlier validation run already checked). When on, the
-    // drive motor sits on the same knuckle->wheel joint used for steering --
-    // exactly like a real CV-jointed front driveshaft, no conflict with
-    // steering at all.
+    // Front (x=+wheelbase/2) is always steered; whether it's ALSO driven
+    // depends on four_wheel_drive_in, same as the 4-wheel case -- the drive
+    // motor sits on the same knuckle->wheel joint used for steering, exactly
+    // like a real CV-jointed front driveshaft, no conflict with steering.
+    // corners[2]/[3] (ML/MR) are only built when six_wheel -- left as
+    // default-constructed (unused) otherwise, matching corners[0]'s
+    // four_wheel_drive-gated construction in spirit (a structural option
+    // that's off by default, preserving bit-exact behavior with every
+    // earlier validation run when not explicitly turned on).
     bool four_wheel_drive = four_wheel_drive_in != 0.0;
-    make_corner(*sys, chassis, corners[0], WHEELBASE / 2, TRACK / 2, chassis_z, true, four_wheel_drive, mat);
-    make_corner(*sys, chassis, corners[1], WHEELBASE / 2, -TRACK / 2, chassis_z, true, four_wheel_drive, mat);
-    make_corner(*sys, chassis, corners[2], -WHEELBASE / 2, TRACK / 2, chassis_z, false, true, mat);
-    make_corner(*sys, chassis, corners[3], -WHEELBASE / 2, -TRACK / 2, chassis_z, false, true, mat);
+    make_corner(*sys, chassis, corners[0], wheelbase / 2, TRACK / 2, chassis_z, true, four_wheel_drive, mat);
+    make_corner(*sys, chassis, corners[1], wheelbase / 2, -TRACK / 2, chassis_z, true, four_wheel_drive, mat);
+    if (six_wheel) {
+        make_corner(*sys, chassis, corners[2], 0.0, TRACK / 2, chassis_z, false, true, mat);
+        make_corner(*sys, chassis, corners[3], 0.0, -TRACK / 2, chassis_z, false, true, mat);
+    }
+    make_corner(*sys, chassis, corners[4], -wheelbase / 2, TRACK / 2, chassis_z, false, true, mat);
+    make_corner(*sys, chassis, corners[5], -wheelbase / 2, -TRACK / 2, chassis_z, false, true, mat);
 
     built = true;
 }
@@ -275,8 +304,11 @@ void ModelInstance::step(double dt) {
         }
     }
 
-    apply_differential(corners[2], corners[3], drive_torque_in);       // rear axle, always driven
-    if (corners[0].drive_motor) {                                     // front axle, only if four_wheel_drive
+    apply_differential(corners[4], corners[5], drive_torque_in);        // rear axle, always driven
+    if (six_wheel) {
+        apply_differential(corners[2], corners[3], drive_torque_mid_in);  // mid axle, always driven when present
+    }
+    if (corners[0].drive_motor) {                                      // front axle, only if four_wheel_drive
         apply_differential(corners[0], corners[1], drive_torque_front_in);
     }
 
@@ -313,6 +345,8 @@ void ModelInstance::step(double dt) {
 #define VR_STEER_FR_DEG 10
 #define VR_DRIVE_TORQUE_FRONT 11
 #define VR_FOUR_WHEEL_DRIVE 12
+#define VR_DRIVE_TORQUE_MID 13
+#define VR_SIX_WHEEL 14
 
 static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
@@ -320,6 +354,8 @@ static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
         case VR_DRIVE_TORQUE: return &m->drive_torque_in;
         case VR_DRIVE_TORQUE_FRONT: return &m->drive_torque_front_in;
         case VR_FOUR_WHEEL_DRIVE: return &m->four_wheel_drive_in;
+        case VR_DRIVE_TORQUE_MID: return &m->drive_torque_mid_in;
+        case VR_SIX_WHEEL: return &m->six_wheel_in;
         case VR_CHASSIS_X: return &m->chassis_x;
         case VR_CHASSIS_Y: return &m->chassis_y;
         case VR_CHASSIS_Z: return &m->chassis_z;
