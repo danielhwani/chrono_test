@@ -192,10 +192,11 @@ C++이 여전히 명확히 이기는 영역은 **원시 계산 속도**뿐임(`-
 **구조적 설정 vs 실시간 입력을 나눔**: 6륜/애커먼/타이어모델/지형처럼 차체 자체를 바꾸는 옵션은 FMI2 `parameter`(초기화 중에만 설정 가능, `Boolean`)로, 조향각/구동토크처럼 매 스텝 바뀌는 값은 `input`(`Real`)으로 노출:
 
 ```
-parameter (Boolean): six_wheel, ackermann, empirical_tire, bumps_terrain
-input     (Real):    steer_deg, drive_torque
+parameter (Boolean): six_wheel, ackermann, empirical_tire, bumps_terrain, four_wheel_drive
+input     (Real):    steer_deg, drive_torque_rear, drive_torque_front, drive_torque_mid
 output    (Real):    chassis_x/y/z, roll/pitch/yaw_deg, speed_mps, steer_FL/FR_deg
 ```
+(`drive_torque_front`/`drive_torque_mid`와 `four_wheel_drive`는 뒤에 나오는 "4WD"/"6x6" 섹션에서 추가된 것 — 처음엔 `steer_deg`/`drive_torque` 둘뿐이었다가, 여러 축을 독립 제어하게 되면서 `drive_torque`도 `drive_torque_rear`로 이름을 맞춤.)
 
 `simple_vehicle.py`의 `main()`이 CLI 옵션으로 하던 걸 그대로 매핑한 것 — 다만 `main()`의 `steer_angle_deg()` 램프와 고정 `DRIVE_TORQUE`는 그 스크립트 자체의 데모 편의였던 거라, FMU에서는 이 두 값을 매 스텝 마스터가 직접 넣어주는 진짜 `input`으로 바꿈(그래야 나중에 ros_control 같은 외부 제어기가 실제로 명령을 내릴 수 있음).
 
@@ -468,7 +469,7 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 \
 
 ### 네이티브 C++ 차량 (fmu/cpp/native_vehicle_fmu/)
 
-`bouncing_ball_native_chrono.cpp`가 증명한 패턴("conda env의 Chrono C++ 헤더/라이브러리를 직접 링크하면 Python 없이도, Modelica master가 직접 불러올 수 있는 FMU가 된다")을 실제 차량에 그대로 적용함. `fmu/chrono_vehicle_fmu.py`(pythonfmu)와 인터페이스는 동일(`steer_deg`/`drive_torque` 입력, 섀시 위치/자세/속도/조향각 출력)하되, 내부적으로 C++에서 `chrono::ChSystemNSC`를 직접 조립.
+`bouncing_ball_native_chrono.cpp`가 증명한 패턴("conda env의 Chrono C++ 헤더/라이브러리를 직접 링크하면 Python 없이도, Modelica master가 직접 불러올 수 있는 FMU가 된다")을 실제 차량에 그대로 적용함. `fmu/chrono_vehicle_fmu.py`(pythonfmu)와 인터페이스는 동일(`steer_deg`/`drive_torque_rear`(당시엔 아직 `drive_torque`) 입력, 섀시 위치/자세/속도/조향각 출력)하되, 내부적으로 C++에서 `chrono::ChSystemNSC`를 직접 조립.
 
 **MVP 범위**: 4륜(전륜조향/후륜구동), rigid 타이어(Bullet Coulomb 접촉), flat 지형, 평행 조향만 먼저 포팅함 — `six_wheel`/`ackermann`/`empirical_tire`/`bumps_terrain`은 다음 단계로 미룸(이 프로젝트 내내 그래왔듯 작게 돌아가는 것부터 먼저). `simple_vehicle.py`의 `make_vehicle()`/`apply_differential()` 로직과 모델 상수(질량, 치수, 스프링/댐퍼 상수 등)를 C++로 그대로 옮겨 적음.
 
@@ -479,7 +480,7 @@ CHRONO_ENV=~/miniconda3/envs/chrono ./build.sh   # 기본값도 이 경로라 �
 
 **API 이름이 Python 바인딩과 다른 부분들**: PyChrono는 SWIG로 감싼 편의 이름을 쓰지만(`GetPosDt()`, `wheel.GetContactForce()`), C++ 원본 API에서는 벡터 성분 접근이 `.x()`/`.y()`/`.z()`(함수 호출, 속성이 아님), 조인트 계층이 `ChLinkMateGeneric`(모터)과 `ChLinkMarkers`(락 조인트)로 나뉘어 있는 등 세부가 다름 — 전부 헤더를 직접 grep해서 정확한 시그니처를 확인하고 맞춰씀(추측으로 짜지 않음).
 
-**검증 — pythonfmu 버전과 bit-exact 일치**: 같은 시나리오(t>1.0s부터 steer_deg=20, drive_torque=260, dt=0.005)를 두 FMU에 각각 흘려서 비교:
+**검증 — pythonfmu 버전과 bit-exact 일치**: 같은 시나리오(t>1.0s부터 steer_deg=20, drive_torque_rear=260(당시엔 아직 `drive_torque`), dt=0.005)를 두 FMU에 각각 흘려서 비교:
 
 ```bash
 cd fmu/cpp/native_vehicle_fmu
@@ -495,7 +496,7 @@ fmpy로 같은 dt(0.005)를 맞춰 6초를 돌려보면 `chassis_x/y`, `yaw_deg`
 
 ### `fmu_driver` 일반화 — 바운싱볼 전용에서 임의의 FMU로
 
-지금까지 `fmu_driver`는 출력 변수 이름이 `h`/`v`로, 입력을 아예 못 넣는 걸로 하드코딩돼 있었음(바운싱볼 전용) — 차량 FMU는 출력이 `chassis_x`/`yaw_deg`/... 고 입력도 `steer_deg`/`drive_torque`가 있어서 그대로는 못 씀. 두 가지를 추가함(기존 호출은 전부 그대로 동작 — 옵션 안 주면 여전히 `h`,`v` 기본값):
+지금까지 `fmu_driver`는 출력 변수 이름이 `h`/`v`로, 입력을 아예 못 넣는 걸로 하드코딩돼 있었음(바운싱볼 전용) — 차량 FMU는 출력이 `chassis_x`/`yaw_deg`/... 고 입력도 `steer_deg`/`drive_torque_rear`가 있어서 그대로는 못 씀. 두 가지를 추가함(기존 호출은 전부 그대로 동작 — 옵션 안 주면 여전히 `h`,`v` 기본값):
 
 ```
 --outputs name1,name2,...   매 스텝 읽어서 출력할 Real 변수들 (기본값: h,v)
@@ -506,7 +507,7 @@ fmpy로 같은 dt(0.005)를 맞춰 6초를 돌려보면 `chassis_x/y`, `yaw_deg`
 ```bash
 cd fmu/cpp/native_fmu/driver
 ./fmu_driver ../../native_vehicle_fmu csv 5 0.002 \
-    --set steer_deg=15 --set drive_torque=260 \
+    --set steer_deg=15 --set drive_torque_rear=260 \
     --outputs chassis_x,chassis_y,yaw_deg,speed_mps
 ```
 
@@ -525,7 +526,7 @@ ros2_control 설계를 얘기하다가(`ackermann_steering_controller`는 표준
 **독립적인 앞/뒤 토크 입력**(B안 — "표준을 따르면 살기 편해져"라 컨트롤러 표준을 지키면서도 FMU 자체는 유연하게 열어둠):
 ```
 four_wheel_drive     구조적 파라미터(bool) — 초기화 시에만 설정, 기본 false(후륜 전용, 기존과 동일)
-drive_torque         기존 그대로, 후륜 명목 토크
+drive_torque_rear    후륜 명목 토크 (처음엔 그냥 `drive_torque`였다가, 앞/중축 독립 토크가 생기면서 이름을 맞춤)
 drive_torque_front   신규, 전륜 명목 토크 (four_wheel_drive=false면 안 쓰임)
 ```
 - `simple_vehicle.py`: `make_vehicle(..., four_wheel_drive=False)` 파라미터 추가 — 기본값 False라 `simple_vehicle.py`/`drive_vehicle.py`/`slip_demo.py` 등 기존 호출 전부 무변화. `apply_differential()` 자체는 안 건드림(이미 어떤 축 그룹이 들어오든 일반적으로 처리하게 짜여 있었음) — 전축용/후축용으로 두 번 나눠 호출하도록 호출부만 바꿈.
@@ -541,7 +542,7 @@ drive_torque_front   신규, 전륜 명목 토크 (four_wheel_drive=false면 안
 6바퀴 트럭도 "3개 축을 별도로 제어"해야 한다는 요청 — 4WD 때 쓴 "전/후 독립 토크" 패턴을 그대로 전/중/후 3축으로 확장. 범위를 두 단계로 나눔: **1단계(이번)**는 `chrono_vehicle_fmu.py`(Python FMU)에만 추가, **2단계**는 `vehicle_native.cpp`에 `six_wheel` 자체를 새로 포팅하는 것 — 바로 아래 별도 섹션에서 같은 세션에 이어서 완료함.
 
 ```
-drive_torque         후축(R) 명목 토크 — 기존 그대로
+drive_torque_rear    후축(R) 명목 토크 — 기존 `drive_torque`에서 이름만 변경(아래 참고)
 drive_torque_mid     중축(M) 명목 토크, 신규 — six_wheel일 때만 존재, 기본값이 DRIVE_TORQUE(260)라
                       건드리지 않으면 전과 똑같이 M도 R과 같은 토크로 구동됨(하위호환)
 drive_torque_front   전축(F) 명목 토크 — 4WD 때 추가된 것 그대로, four_wheel_drive일 때만 적용
@@ -567,6 +568,8 @@ cd fmu/cpp/native_vehicle_fmu
 **검증**: `validate_native_vehicle_fmu.py`를 4개 조합(4륜×2WD/4WD, 6륜×2WD/4WD=6x6)으로 전부 확장해서 pythonfmu FMU와 비교 — **넷 다 0.00e+00**, 6륜 포팅도 완벽히 정확함을 확인. `OMSimulator --mode=cs`로도 여전히 정상 로드/구동되는 것 재확인(디폴트 설정 기준 — CLI에서 개별 시작값을 오버라이드하는 옵션은 못 찾아서 `six_wheel=1`로 직접 켜서 도는 것까진 이번엔 확인 안 함, 필요하면 SSP 구성으로 가능할 것).
 
 이제 `fmu/chrono_vehicle_fmu.py`(Python)와 `fmu/cpp/native_vehicle_fmu/`(네이티브 C++) 둘 다 4륜/6륜, 2WD/4WD/6x6 전부 지원하고, 서로 bit-exact — ros2_control이 실제로 쓸 네이티브 C++ FMU가 6x6 트럭까지 커버하게 됨.
+
+**이름 정리**: `drive_torque_front`/`drive_torque_mid`가 생기고 나니 이름 없는 `drive_torque`(후축)만 혼자 튀어서 헷갈린다는 지적 — 두 FMU 다 `drive_torque` → **`drive_torque_rear`**로 이름을 바꿔서 `_front`/`_mid`/`_rear` 세 개가 대칭이 되도록 정리함(관련 검증 스크립트, `fmu_driver` 사용 예시도 다 같이 업데이트). VR 번호(1번)는 그대로라 순수 이름 변경이고, 재검증 결과도 그대로 전부 bit-exact.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

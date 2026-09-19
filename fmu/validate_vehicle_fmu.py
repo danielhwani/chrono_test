@@ -74,7 +74,7 @@ def run_fmu():
     t = 0.0
     while t < SIM_TIME:
         steer = steer_angle_deg(t, STEER_DEG, STEER_START, STEER_RAMP)
-        fmu.setReal([vr["steer_deg"], vr["drive_torque"]], [steer, DRIVE_TORQUE])
+        fmu.setReal([vr["steer_deg"], vr["drive_torque_rear"]], [steer, DRIVE_TORQUE])
         fmu.doStep(currentCommunicationPoint=t, communicationStepSize=DT)
         t += DT
 

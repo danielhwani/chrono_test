@@ -28,7 +28,10 @@
  *
  * Variables (value references):
  *   0: steer_deg          input   [deg]   commanded front-wheel steer angle
- *   1: drive_torque       input   [N*m]   nominal rear-axle drive torque
+ *   1: drive_torque_rear  input   [N*m]   nominal rear-axle drive torque
+ *                                          (named "..._rear", not bare
+ *                                          "drive_torque", for symmetry
+ *                                          with _front/_mid below)
  *   2: chassis_x          output  [m]
  *   3: chassis_y          output  [m]
  *   4: chassis_z          output  [m]
@@ -142,7 +145,7 @@ struct Corner {
 // needing to branch on layout every step.
 struct ModelInstance {
     fmi2Real steer_deg_in = 0.0;
-    fmi2Real drive_torque_in = DRIVE_TORQUE_DEFAULT;
+    fmi2Real drive_torque_rear_in = DRIVE_TORQUE_DEFAULT;
     fmi2Real drive_torque_front_in = 0.0;
     fmi2Real four_wheel_drive_in = 0.0;  // read once in build(); 0.0=off (default, rear-only)
     fmi2Real drive_torque_mid_in = DRIVE_TORQUE_DEFAULT;
@@ -304,7 +307,7 @@ void ModelInstance::step(double dt) {
         }
     }
 
-    apply_differential(corners[4], corners[5], drive_torque_in);        // rear axle, always driven
+    apply_differential(corners[4], corners[5], drive_torque_rear_in);   // rear axle, always driven
     if (six_wheel) {
         apply_differential(corners[2], corners[3], drive_torque_mid_in);  // mid axle, always driven when present
     }
@@ -333,7 +336,7 @@ void ModelInstance::step(double dt) {
 }
 
 #define VR_STEER_DEG 0
-#define VR_DRIVE_TORQUE 1
+#define VR_DRIVE_TORQUE_REAR 1
 #define VR_CHASSIS_X 2
 #define VR_CHASSIS_Y 3
 #define VR_CHASSIS_Z 4
@@ -351,7 +354,7 @@ void ModelInstance::step(double dt) {
 static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
         case VR_STEER_DEG: return &m->steer_deg_in;
-        case VR_DRIVE_TORQUE: return &m->drive_torque_in;
+        case VR_DRIVE_TORQUE_REAR: return &m->drive_torque_rear_in;
         case VR_DRIVE_TORQUE_FRONT: return &m->drive_torque_front_in;
         case VR_FOUR_WHEEL_DRIVE: return &m->four_wheel_drive_in;
         case VR_DRIVE_TORQUE_MID: return &m->drive_torque_mid_in;

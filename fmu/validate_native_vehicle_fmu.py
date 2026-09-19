@@ -61,7 +61,7 @@ def run(fmu_path, four_wheel_drive=False, six_wheel=False):
         steer = STEER_DEG if t > STEER_START else 0.0
         front_torque = DRIVE_TORQUE_FRONT if four_wheel_drive else 0.0
         mid_torque = DRIVE_TORQUE_MID if six_wheel else DRIVE_TORQUE
-        fmu.setReal([vr["steer_deg"], vr["drive_torque"], vr["drive_torque_front"], vr["drive_torque_mid"]],
+        fmu.setReal([vr["steer_deg"], vr["drive_torque_rear"], vr["drive_torque_front"], vr["drive_torque_mid"]],
                     [steer, DRIVE_TORQUE, front_torque, mid_torque])
         fmu.doStep(currentCommunicationPoint=t, communicationStepSize=DT)
         t += DT

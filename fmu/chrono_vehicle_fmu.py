@@ -27,7 +27,11 @@ constant, which were conveniences for the standalone demo -- a real FMI
 slave should let the master command these directly):
     steer_deg          commanded front-wheel steer angle, degrees (applies to
                         both front wheels alike, or split via ackermann)
-    drive_torque        nominal rear-axle drive torque, N*m
+    drive_torque_rear  nominal rear-axle drive torque, N*m (named
+                        "..._rear", not bare "drive_torque", once
+                        drive_torque_front/_mid existed alongside it --
+                        three siblings named the same way beats one
+                        being the odd one out)
     drive_torque_front  nominal front-axle drive torque, N*m (only takes
                         effect when four_wheel_drive is true; default 0.0
                         is physically equivalent to no front motor at all,
@@ -105,7 +109,7 @@ class ChronoVehicle(Fmi2Slave):
 
         # ---- runtime inputs ----
         self.steer_deg = 0.0
-        self.drive_torque = DRIVE_TORQUE
+        self.drive_torque_rear = DRIVE_TORQUE
         self.drive_torque_front = 0.0
         self.drive_torque_mid = DRIVE_TORQUE
 
@@ -128,7 +132,7 @@ class ChronoVehicle(Fmi2Slave):
             Real("steer_deg", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
         )
         self.register_variable(
-            Real("drive_torque", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
+            Real("drive_torque_rear", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
         )
         self.register_variable(
             Real("drive_torque_front", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
@@ -176,7 +180,7 @@ class ChronoVehicle(Fmi2Slave):
         )
 
         # Split the driven corners by axle prefix (F/M/R) so do_step() can
-        # apply drive_torque_front/drive_torque_mid/drive_torque
+        # apply drive_torque_front/drive_torque_mid/drive_torque_rear
         # independently per axle instead of one shared value for everything
         # -- F only exists as a driven group when four_wheel_drive is set, M
         # only exists at all when six_wheel is set (and is always driven
@@ -204,7 +208,7 @@ class ChronoVehicle(Fmi2Slave):
             for fn in self._steer_functions.values():
                 fn.SetConstant(cur_steer_rad)
 
-        apply_differential(self._rear_motors, self._rear_throttle_functions, self.drive_torque)
+        apply_differential(self._rear_motors, self._rear_throttle_functions, self.drive_torque_rear)
         apply_differential(self._mid_motors, self._mid_throttle_functions, self.drive_torque_mid)
         apply_differential(self._front_motors, self._front_throttle_functions, self.drive_torque_front)
         if self._tire_accumulators is not None:
