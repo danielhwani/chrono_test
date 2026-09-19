@@ -1,6 +1,12 @@
 /*
  * fmu_driver -- a minimal C "master"/host for an FMI2 Co-Simulation FMU,
- * loaded via dlopen()/dlsym() instead of any FMI library (fmpy, etc).
+ * built on top of fmu_client (dlopen()/dlsym()-based, no fmpy/Python
+ * anywhere). fmu_driver.c itself is now just CLI argv parsing and the
+ * bench/csv/paced mode loops -- all the FMI-loading plumbing (dlopen the
+ * .so, parse modelDescription.xml, instantiate/setupExperiment/
+ * enter+exitInitializationMode, setReal/getReal/doStep/close) lives in
+ * fmu_client.c/.h, shared with the planned ros2_control
+ * ChronoFmuSystemInterface plugin so that logic isn't duplicated.
  *
  * This is deliberately NOT the same thing as either of these other files in
  * the repo, which it sits between:
@@ -11,10 +17,11 @@
  *                                    fmi2DoStep/fmi2GetReal/... implementation
  *                                    that gets compiled into the .so this
  *                                    driver loads. It doesn't run on its own.
- * fmu_driver.c is the *caller*: it dlopen()s that .so and calls its FMI2
- * entry points directly, the same role fmpy plays in validate_native_fmu.py
- * and benchmark_realtime.py, but with zero Python anywhere in the process.
- * That completes the fully-native path: native FMU + native driver.
+ * fmu_driver.c is the *caller*: it loads that .so (via fmu_client) and
+ * calls its FMI2 entry points, the same role fmpy plays in
+ * validate_native_fmu.py and benchmark_realtime.py, but with zero Python
+ * anywhere in the process. That completes the fully-native path: native
+ * FMU + native driver.
  *
  * Usage:
  *   ./fmu_driver <extracted-fmu-dir> bench  <sim_time_s> <dt_s> [options]
@@ -45,14 +52,14 @@
  * place alongside the .fmu it also produces). For a third-party .fmu, unzip
  * it first: `mkdir foo_extracted && unzip foo.fmu -d foo_extracted`.
  *
- * This driver is deliberately NOT specific to our own model: it reads the
- * FMU's own modelDescription.xml at startup to find the GUID, the
+ * This driver is deliberately NOT specific to our own model: fmu_client
+ * reads the FMU's own modelDescription.xml at startup to find the GUID, the
  * modelIdentifier (so it knows which .so to dlopen), and the value
  * references of whichever Real variables --outputs/--set name. Any FMI2
  * Co-Simulation FMU works here unmodified as long as the variables named
  * exist -- e.g. fmu/cpp/native_fmu/ or fmu/modelica/BouncingBallModelica.fmu
  * (h, v -- the default), or fmu/cpp/native_vehicle_fmu/ (steer_deg,
- * drive_torque as --set inputs; chassis_x, yaw_deg, etc. as --outputs),
+ * drive_torque_rear as --set inputs; chassis_x, yaw_deg, etc. as --outputs),
  * which don't share a GUID or variable numbering with any of the others.
  *
  *   bench -- flat-out fmi2DoStep loop (no pacing), reports ns/step and RTF.
@@ -71,58 +78,19 @@
  *
  * Examples:
  *   ./fmu_driver ../../native_vehicle_fmu csv 3 0.002 \
- *       --set steer_deg=15 --set drive_torque=260 \
+ *       --set steer_deg=15 --set drive_torque_rear=260 \
  *       --outputs chassis_x,chassis_y,yaw_deg,speed_mps
  *
- * Build: see ./build.sh (needs -ldl).
+ * Build: see ./build.sh (compiles fmu_client.c alongside this file, -ldl).
  */
-#include <dlfcn.h>
-#include <limits.h>
+#include "fmu_client.h"
+
 #include <sched.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/utsname.h>
 #include <time.h>
-
-/* ---- minimal FMI2 type definitions, matching bouncing_ball_native.c ---- */
-typedef void* fmi2Component;
-typedef void* fmi2ComponentEnvironment;
-typedef const char* fmi2String;
-typedef double fmi2Real;
-typedef int fmi2Integer;
-typedef int fmi2Boolean;
-typedef unsigned int fmi2ValueReference;
-typedef int fmi2Status;
-typedef int fmi2Type;
-
-#define fmi2OK 0
-#define fmi2CoSimulation 1
-
-typedef void (*fmi2CallbackLogger)(fmi2ComponentEnvironment, fmi2String, fmi2Status, fmi2String, fmi2String, ...);
-typedef void* (*fmi2CallbackAllocateMemory)(size_t, size_t);
-typedef void (*fmi2CallbackFreeMemory)(void*);
-typedef void (*fmi2StepFinished)(fmi2ComponentEnvironment, fmi2Status);
-
-typedef struct {
-    fmi2CallbackLogger logger;
-    fmi2CallbackAllocateMemory allocateMemory;
-    fmi2CallbackFreeMemory freeMemory;
-    fmi2StepFinished stepFinished;
-    fmi2ComponentEnvironment componentEnvironment;
-} fmi2CallbackFunctions;
-
-typedef fmi2Component (*fmi2Instantiate_t)(fmi2String, fmi2Type, fmi2String, fmi2String,
-                                            const fmi2CallbackFunctions*, fmi2Boolean, fmi2Boolean);
-typedef void (*fmi2FreeInstance_t)(fmi2Component);
-typedef fmi2Status (*fmi2SetupExperiment_t)(fmi2Component, fmi2Boolean, fmi2Real, fmi2Real, fmi2Boolean, fmi2Real);
-typedef fmi2Status (*fmi2EnterInitializationMode_t)(fmi2Component);
-typedef fmi2Status (*fmi2ExitInitializationMode_t)(fmi2Component);
-typedef fmi2Status (*fmi2Terminate_t)(fmi2Component);
-typedef fmi2Status (*fmi2SetReal_t)(fmi2Component, const fmi2ValueReference[], size_t, const fmi2Real[]);
-typedef fmi2Status (*fmi2GetReal_t)(fmi2Component, const fmi2ValueReference[], size_t, fmi2Real[]);
-typedef fmi2Status (*fmi2DoStep_t)(fmi2Component, fmi2Real, fmi2Real, fmi2Boolean);
 
 /* ---- runtime context (kernel + this process's scheduling policy), same
  * fields/format as bouncing_ball.cpp's get_runtime_context/print_runtime_context ---- */
@@ -197,91 +165,6 @@ static void write_json(const char* path, const char* kernel_label, int is_rt_ker
     fprintf(f, "]}\n");
     fclose(f);
     printf("  wrote %s\n", path);
-}
-
-static void* xdlsym(void* handle, const char* name) {
-    void* sym = dlsym(handle, name);
-    if (!sym) {
-        fprintf(stderr, "dlsym failed for %s: %s\n", name, dlerror());
-        exit(1);
-    }
-    return sym;
-}
-
-static double now_s(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec + ts.tv_nsec * 1e-9;
-}
-
-/* ---- tiny modelDescription.xml scanner ----
- * Not a real XML parser -- just enough to pull `attr="value"` out of the
- * well-formed, single-line-per-attribute XML that both our own hand-written
- * modelDescription.xml and OpenModelica's omc-generated one use. Searches
- * forward from `search_from` for `attr_name="`, copies out everything up to
- * the closing quote. Returns 0 (and leaves out untouched) if not found. */
-static int find_attr_value(const char* search_from, const char* attr_name, char* out, size_t out_size) {
-    char needle[64];
-    snprintf(needle, sizeof(needle), "%s=\"", attr_name);
-    const char* p = strstr(search_from, needle);
-    if (!p) return 0;
-    p += strlen(needle);
-    const char* q = strchr(p, '"');
-    if (!q) return 0;
-    size_t len = (size_t)(q - p);
-    if (len >= out_size) len = out_size - 1;
-    memcpy(out, p, len);
-    out[len] = '\0';
-    return 1;
-}
-
-/* Find a ScalarVariable's value reference by its `name="..."` attribute
- * (used for both --outputs and --set, and for the default h/v case). */
-static int find_var_vr(const char* xml, const char* var_name, fmi2ValueReference* out_vr) {
-    char needle[128];
-    snprintf(needle, sizeof(needle), "name=\"%s\"", var_name);
-    const char* tag = strstr(xml, needle);
-    char vr_str[32];
-    if (!tag || !find_attr_value(tag, "valueReference", vr_str, sizeof(vr_str))) return 0;
-    *out_vr = (fmi2ValueReference)atoi(vr_str);
-    return 1;
-}
-
-/* Real callback functions instead of NULL: our own hand-written FMU tolerates
- * a NULL fmi2CallbackFunctions* (falls back to malloc), but the FMI2 spec
- * doesn't actually make these optional, and OpenModelica-generated FMUs
- * dereference them unconditionally (e.g. to log during instantiation) --
- * passing NULL segfaults inside their fmi2Instantiate. fmpy always supplies
- * real callbacks for the same reason. */
-static void fmu_logger(fmi2ComponentEnvironment env, fmi2String instanceName, fmi2Status status,
-                        fmi2String category, fmi2String message, ...) {
-    (void)env; (void)status;
-    va_list ap;
-    va_start(ap, message);
-    fprintf(stderr, "[%s|%s] ", instanceName ? instanceName : "?", category ? category : "?");
-    vfprintf(stderr, message, ap);
-    fprintf(stderr, "\n");
-    va_end(ap);
-}
-
-static void* fmu_alloc(size_t nobj, size_t size) { return calloc(nobj, size); }
-static void fmu_free(void* p) { free(p); }
-
-static char* read_whole_file(const char* path) {
-    FILE* f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* buf = malloc((size_t)size + 1);
-    if (fread(buf, 1, (size_t)size, f) != (size_t)size) {
-        fclose(f);
-        free(buf);
-        return NULL;
-    }
-    buf[size] = '\0';
-    fclose(f);
-    return buf;
 }
 
 #define MAX_VARS 16
@@ -359,22 +242,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    char xml_path[1024];
-    snprintf(xml_path, sizeof(xml_path), "%s/modelDescription.xml", fmu_dir);
-    char* xml = read_whole_file(xml_path);
-    if (!xml) {
-        fprintf(stderr, "could not read %s (pass a directory with modelDescription.xml and "
-                        "binaries/linux64/ in it -- unzip a .fmu first if needed)\n", xml_path);
-        return 1;
-    }
-
-    char guid[128], model_id[128];
-    const char* cosim_tag = strstr(xml, "<CoSimulation");
-    if (!find_attr_value(xml, "guid", guid, sizeof(guid)) ||
-        !cosim_tag || !find_attr_value(cosim_tag, "modelIdentifier", model_id, sizeof(model_id))) {
-        fprintf(stderr, "could not parse guid/modelIdentifier out of %s\n", xml_path);
-        free(xml);
-        return 1;
+    FmuClient* client = fmu_client_open(fmu_dir, "fmu_driver_instance");
+    if (!client) {
+        return 1;  /* fmu_client_open already printed a diagnostic */
     }
 
     /* --outputs a,b,c (default: h,v, for backward compatibility with the
@@ -392,34 +262,27 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 2; ++i) output_names[n_outputs++] = (char*)default_outputs[i];
     }
 
-    fmi2ValueReference vr_out[MAX_VARS];
+    FmuValueReference vr_out[MAX_VARS];
     for (int i = 0; i < n_outputs; ++i) {
-        if (!find_var_vr(xml, output_names[i], &vr_out[i])) {
-            fprintf(stderr, "could not find output variable '%s' in %s\n", output_names[i], xml_path);
-            free(xml);
+        if (!fmu_client_find_vr(client, output_names[i], &vr_out[i])) {
+            fprintf(stderr, "could not find output variable '%s' in %s/modelDescription.xml\n",
+                    output_names[i], fmu_dir);
+            fmu_client_close(client);
             return 1;
         }
     }
 
-    fmi2ValueReference vr_set[MAX_VARS];
+    FmuValueReference vr_set[MAX_VARS];
     for (int i = 0; i < n_sets; ++i) {
-        if (!find_var_vr(xml, set_names[i], &vr_set[i])) {
-            fprintf(stderr, "could not find --set variable '%s' in %s\n", set_names[i], xml_path);
-            free(xml);
+        if (!fmu_client_find_vr(client, set_names[i], &vr_set[i])) {
+            fprintf(stderr, "could not find --set variable '%s' in %s/modelDescription.xml\n",
+                    set_names[i], fmu_dir);
+            fmu_client_close(client);
             return 1;
         }
     }
-    free(xml);
 
-    char so_path[1024];
-    snprintf(so_path, sizeof(so_path), "%s/binaries/linux64/%s.so", fmu_dir, model_id);
-
-    void* handle = dlopen(so_path, RTLD_NOW);
-    if (!handle) {
-        fprintf(stderr, "dlopen(%s) failed: %s\n", so_path, dlerror());
-        return 1;
-    }
-    fprintf(stderr, "model: %s  guid=%s  outputs:", model_id, guid);
+    fprintf(stderr, "model: %s  guid=%s  outputs:", fmu_client_model_id(client), fmu_client_guid(client));
     for (int i = 0; i < n_outputs; ++i) fprintf(stderr, " %s=vr%u", output_names[i], vr_out[i]);
     if (n_sets > 0) {
         fprintf(stderr, "  set:");
@@ -427,50 +290,24 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "\n");
 
-    char abs_dir[PATH_MAX];
-    char resource_uri[PATH_MAX + 32] = "";
-    if (realpath(fmu_dir, abs_dir)) {
-        snprintf(resource_uri, sizeof(resource_uri), "file://%s/resources", abs_dir);
-    }
-
-    fmi2Instantiate_t fmi2Instantiate = (fmi2Instantiate_t)xdlsym(handle, "fmi2Instantiate");
-    fmi2FreeInstance_t fmi2FreeInstance = (fmi2FreeInstance_t)xdlsym(handle, "fmi2FreeInstance");
-    fmi2SetupExperiment_t fmi2SetupExperiment = (fmi2SetupExperiment_t)xdlsym(handle, "fmi2SetupExperiment");
-    fmi2EnterInitializationMode_t fmi2EnterInitializationMode =
-        (fmi2EnterInitializationMode_t)xdlsym(handle, "fmi2EnterInitializationMode");
-    fmi2ExitInitializationMode_t fmi2ExitInitializationMode =
-        (fmi2ExitInitializationMode_t)xdlsym(handle, "fmi2ExitInitializationMode");
-    fmi2Terminate_t fmi2Terminate = (fmi2Terminate_t)xdlsym(handle, "fmi2Terminate");
-    fmi2SetReal_t fmi2SetReal = (fmi2SetReal_t)xdlsym(handle, "fmi2SetReal");
-    fmi2GetReal_t fmi2GetReal = (fmi2GetReal_t)xdlsym(handle, "fmi2GetReal");
-    fmi2DoStep_t fmi2DoStep = (fmi2DoStep_t)xdlsym(handle, "fmi2DoStep");
-
-    fmi2CallbackFunctions callbacks = {fmu_logger, fmu_alloc, fmu_free, NULL, NULL};
-    fmi2Component c = fmi2Instantiate("fmu_driver_instance", fmi2CoSimulation, guid, resource_uri,
-                                       &callbacks, 0, 0);
-    if (!c) {
-        fprintf(stderr, "fmi2Instantiate returned NULL\n");
-        return 1;
-    }
-    fmi2SetupExperiment(c, 0, 0.0, 0.0, 0, 0.0);
-    fmi2EnterInitializationMode(c);
-    fmi2ExitInitializationMode(c);
     if (n_sets > 0) {
-        fmi2SetReal(c, vr_set, n_sets, set_values);
+        fmu_client_set_real(client, vr_set, n_sets, set_values);
     }
 
     long n_steps = (long)(sim_time / dt);
-    fmi2Real out_vals[MAX_VARS];
+    double out_vals[MAX_VARS];
 
     if (is_bench) {
-        double t0 = now_s();
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
         double t = 0.0;
         for (long i = 0; i < n_steps; ++i) {
-            fmi2DoStep(c, t, dt, 1);
+            fmu_client_do_step(client, t, dt);
             t += dt;
         }
-        double elapsed = now_s() - t0;
-        fmi2GetReal(c, vr_out, n_outputs, out_vals);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
+        fmu_client_get_real(client, vr_out, n_outputs, out_vals);
         double ns_per_step = elapsed * 1e9 / n_steps;
         double rtf = sim_time / elapsed;
         printf("fmu_driver bench: %ld steps, dt=%g, sim_time=%g s\n", n_steps, dt, sim_time);
@@ -495,7 +332,7 @@ int main(int argc, char** argv) {
         double* periods = malloc(sizeof(double) * n_steps);
         double t = 0.0;
         for (long i = 0; i < n_steps; ++i) {
-            fmi2DoStep(c, t, dt, 1);
+            fmu_client_do_step(client, t, dt);
             t += dt;
 
             next.tv_nsec += dt_ns;
@@ -535,7 +372,7 @@ int main(int argc, char** argv) {
         long n_over_2x = 0;
         for (long i = 0; i < n_steps; ++i) if (periods[i] > 2 * dt) ++n_over_2x;
         printf("  iterations > 2x target: %ld (%.3f%%)\n", n_over_2x, 100.0 * n_over_2x / n_steps);
-        fmi2GetReal(c, vr_out, n_outputs, out_vals);
+        fmu_client_get_real(client, vr_out, n_outputs, out_vals);
         printf("  final state: ");
         for (int i = 0; i < n_outputs; ++i) printf("%s=%.6f ", output_names[i], out_vals[i]);
         printf("(printed so -O2 can't dead-code-eliminate the loop)\n");
@@ -557,22 +394,20 @@ int main(int argc, char** argv) {
         for (int i = 0; i < n_outputs; ++i) printf(",%s", output_names[i]);
         printf("\n");
 
-        fmi2GetReal(c, vr_out, n_outputs, out_vals);
+        fmu_client_get_real(client, vr_out, n_outputs, out_vals);
         printf("%.6f", t);
         for (int i = 0; i < n_outputs; ++i) printf(",%.6f", out_vals[i]);
         printf("\n");
         for (long i = 0; i < n_steps; ++i) {
-            fmi2DoStep(c, t, dt, 1);
+            fmu_client_do_step(client, t, dt);
             t += dt;
-            fmi2GetReal(c, vr_out, n_outputs, out_vals);
+            fmu_client_get_real(client, vr_out, n_outputs, out_vals);
             printf("%.6f", t);
             for (int j = 0; j < n_outputs; ++j) printf(",%.6f", out_vals[j]);
             printf("\n");
         }
     }
 
-    fmi2Terminate(c);
-    fmi2FreeInstance(c);
-    dlclose(handle);
+    fmu_client_close(client);
     return 0;
 }

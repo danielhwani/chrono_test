@@ -571,6 +571,28 @@ cd fmu/cpp/native_vehicle_fmu
 
 **이름 정리**: `drive_torque_front`/`drive_torque_mid`가 생기고 나니 이름 없는 `drive_torque`(후축)만 혼자 튀어서 헷갈린다는 지적 — 두 FMU 다 `drive_torque` → **`drive_torque_rear`**로 이름을 바꿔서 `_front`/`_mid`/`_rear` 세 개가 대칭이 되도록 정리함(관련 검증 스크립트, `fmu_driver` 사용 예시도 다 같이 업데이트). VR 번호(1번)는 그대로라 순수 이름 변경이고, 재검증 결과도 그대로 전부 bit-exact.
 
+### ros2_control 준비 1단계: `fmu_driver`의 FMI 로딩 로직을 라이브러리로 분리 (`fmu_client.c`/`.h`)
+
+앞서 잡아둔 순서표의 1번 — `fmu_driver.c` 안에 뒤섞여 있던 "FMI 로딩 배관"(dlopen, `modelDescription.xml` 파싱, `fmi2Instantiate`→`SetupExperiment`→`Enter/ExitInitializationMode` 시퀀스, `SetReal`/`GetReal`/`DoStep`/정리)을 `fmu_client.c`/`fmu_client.h`라는 작은 라이브러리로 뽑아냄. 이유: `fmu_driver`(CLI)뿐 아니라 앞으로 만들 ros2_control `ChronoFmuSystemInterface` 플러그인도 정확히 같은 절차가 필요한데, `fmu_driver.c`는 `main()` 하나짜리 실행파일이라 그 안의 로직을 재사용할 방법이 없었음 — 복붙해서 두 벌 관리하는 대신, 둘 다 이 라이브러리를 링크하게 함.
+
+**API** (`fmu_client.h`, C++에서도 그대로 include 가능하게 `extern "C"`로 감쌈):
+```c
+FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name);
+int fmu_client_find_vr(const FmuClient*, const char* var_name, FmuValueReference* out_vr);
+int fmu_client_set_real(FmuClient*, const FmuValueReference* vrs, size_t n, const double* values);
+int fmu_client_get_real(FmuClient*, const FmuValueReference* vrs, size_t n, double* values);
+int fmu_client_do_step(FmuClient*, double current_time, double step_size);
+void fmu_client_close(FmuClient*);
+```
+`fmu_driver.c`는 이제 argv 파싱과 bench/csv/paced 루프만 남고, FMI 쪽은 전부 이 5개 함수 호출로 대체됨(내부 구현은 기존 코드를 그대로 옮긴 것뿐, 새로 짜지 않음).
+
+```bash
+cd fmu/cpp/native_fmu/driver
+gcc -O2 -o fmu_driver fmu_driver.c fmu_client.c -ldl   # build.sh가 이미 이렇게 바뀌어 있음
+```
+
+**회귀 검증**: 이 세션에서 다뤘던 FMU 전부(바운싱볼 손물리/Chrono/Modelica, 차량 4륜/6x6 bench·csv·paced·`--json-out`)를 리팩터링 전후로 비교 — **전부 숫자가 정확히 똑같음**(예: 차량 bench `chassis_x=2.311297`, paced `chassis_x=0.580022` — 이전 세션 기록과 일치). 순수 리팩터링이라 동작 변화 없음을 확인.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
