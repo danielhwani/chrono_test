@@ -62,14 +62,14 @@ int main(int argc, char ** argv)
     std::printf("  command: %s\n", ci.get_name().c_str());
   }
 
-  // command 0.3 rad (~17 deg) on the left steering joint only, to check
-  // read() after write() actually reflects it (via the 4c average, so
-  // ~0.15 rad on both wheels' reported state -- not a bug, the documented
-  // placeholder behavior).
+  // command 0.3 rad (~17 deg) on the LEFT steering joint only, RIGHT left
+  // at 0 -- with 4c's independent_front_steer wiring, read() should report
+  // back exactly 0.3 rad / 0.0 rad, not an averaged ~0.15 rad on both (that
+  // was the old 4c placeholder's behavior, now replaced).
   //
   // 5.0 rad/s on BOTH rear wheels (the common straight-driving case -- an
-  // asymmetric L/R command would just average into one axle target too,
-  // same placeholder limitation as steer_deg, not a new one) to exercise
+  // asymmetric L/R command would just average into one axle target, same
+  // limitation drive_torque_front/_mid/_rear already have) to exercise
   // 4b's velocity->torque P loop and watch it converge (or not).
   for (auto & ci : command_interfaces) {
     if (ci.get_name().find("front_left_steering_joint") != std::string::npos) {

@@ -8,11 +8,13 @@
 // (velocity), 4-wheel car only -- not six_wheel (deferred on purpose, see
 // memory: finish the 4-wheel pipeline through step 7 first).
 //
-// One known gap left, deliberately NOT hidden behind a fake-looking
-// implementation -- see the matching comment in the .cpp:
-//   - 4c (not done yet): the URDF has two independent front steering
-//     command_interfaces, but the FMU has one shared steer_deg input. The
-//     two commands are averaged for now, not treated as the final design.
+// 4c (front steering input width) is now done: the URDF's two independent
+// front steering command_interfaces are sent straight through to the FMU's
+// independent_front_steer=1 / steer_fl_deg_in / steer_fr_deg_in inputs
+// (added to both FMUs specifically for this -- see README's 4c section),
+// instead of being averaged into the old shared steer_deg input. That
+// input still exists on the FMU (used by fmu_driver/other direct callers)
+// but this plugin no longer touches it.
 //
 // 4b (rear wheel velocity->torque) is now done: a plain proportional
 // controller (kVelocityKp, clamped to kMaxDriveTorqueRear) converts the
@@ -78,11 +80,13 @@ private:
   // Value references, resolved once in on_init() via fmu_client_find_vr()
   // rather than hardcoded, so a future modelDescription.xml VR renumbering
   // doesn't silently break this file.
-  FmuValueReference vr_steer_deg_{};
   FmuValueReference vr_drive_torque_rear_{};
-  FmuValueReference vr_steer_fl_deg_{};
-  FmuValueReference vr_steer_fr_deg_{};
+  FmuValueReference vr_steer_fl_deg_{};   // output: steer_FL_deg (actual, read back)
+  FmuValueReference vr_steer_fr_deg_{};   // output: steer_FR_deg (actual, read back)
   FmuValueReference vr_speed_mps_{};
+  FmuValueReference vr_independent_front_steer_{};  // input: set to 1.0 once, in on_init()
+  FmuValueReference vr_steer_fl_deg_in_{};          // input: FL commanded angle
+  FmuValueReference vr_steer_fr_deg_in_{};          // input: FR commanded angle
 
   double sim_time_ = 0.0;
   // Matches native_vehicle_fmu/modelDescription.xml's DefaultExperiment

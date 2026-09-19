@@ -61,6 +61,15 @@
     <ScalarVariable name="six_wheel" valueReference="14" causality="input" variability="continuous">
       <Real start="0.0"/>
     </ScalarVariable>
+    <ScalarVariable name="steer_fl_deg_in" valueReference="15" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="steer_fr_deg_in" valueReference="16" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="independent_front_steer" valueReference="17" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
   </ModelVariables>
 
   <ModelStructure>

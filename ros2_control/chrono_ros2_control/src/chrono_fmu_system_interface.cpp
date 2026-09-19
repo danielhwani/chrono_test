@@ -47,12 +47,26 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
   }
 
   bool ok = true;
-  ok &= find_vr_or_fail(fmu_, "steer_deg", &vr_steer_deg_);
   ok &= find_vr_or_fail(fmu_, "drive_torque_rear", &vr_drive_torque_rear_);
   ok &= find_vr_or_fail(fmu_, "steer_FL_deg", &vr_steer_fl_deg_);
   ok &= find_vr_or_fail(fmu_, "steer_FR_deg", &vr_steer_fr_deg_);
   ok &= find_vr_or_fail(fmu_, "speed_mps", &vr_speed_mps_);
+  ok &= find_vr_or_fail(fmu_, "independent_front_steer", &vr_independent_front_steer_);
+  ok &= find_vr_or_fail(fmu_, "steer_fl_deg_in", &vr_steer_fl_deg_in_);
+  ok &= find_vr_or_fail(fmu_, "steer_fr_deg_in", &vr_steer_fr_deg_in_);
   if (!ok) {
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  // 4c: tell the FMU to take FL/FR steer angles independently (see header
+  // comment) instead of the old shared steer_deg -- set once here, never
+  // touched again, same "structural-ish toggle set once at init" pattern
+  // as four_wheel_drive/six_wheel (even though this one is actually
+  // checked every step() on the FMU side, not build-time).
+  FmuValueReference vr_flag = vr_independent_front_steer_;
+  double one = 1.0;
+  if (!fmu_client_set_real(fmu_, &vr_flag, 1, &one)) {
+    RCLCPP_ERROR(logger(), "fmu_client_set_real(independent_front_steer) failed");
     return hardware_interface::CallbackReturn::ERROR;
   }
 
@@ -129,19 +143,20 @@ hardware_interface::return_type ChronoFmuSystemInterface::read(
 hardware_interface::return_type ChronoFmuSystemInterface::write(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
-  // 4c placeholder: average the two independently-commanded front steering
-  // angles into the FMU's single steer_deg input. Not the final design --
-  // see the header comment and README.
-  double steer_sum_rad = 0.0;
-  int steer_count = 0;
+  // 4c: send each front wheel's independently-commanded steering angle
+  // straight through to the FMU's steer_fl_deg_in/steer_fr_deg_in (set to
+  // take priority over steer_deg via independent_front_steer=1 in
+  // on_init()) -- no averaging, the controller's own Ackermann correction
+  // (different FL/FR angles) survives intact.
+  double steer_fl_deg = 0.0;
+  double steer_fr_deg = 0.0;
   for (const auto & joint : joints_) {
-    if (joint.interface == hardware_interface::HW_IF_POSITION) {
-      steer_sum_rad += joint.command;
-      ++steer_count;
+    if (joint.interface != hardware_interface::HW_IF_POSITION) {
+      continue;
     }
+    const bool is_left = joint.name.find("left") != std::string::npos;
+    (is_left ? steer_fl_deg : steer_fr_deg) = joint.command * kDegPerRad;
   }
-  const double steer_deg =
-    (steer_count > 0 ? (steer_sum_rad / steer_count) : 0.0) * kDegPerRad;
 
   // 4b: rear wheel command_interfaces are `velocity` (joint.command, rad/s);
   // drive_torque_rear is a torque input. Both rear wheels' commanded
@@ -170,10 +185,10 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
     drive_torque_rear = -kMaxDriveTorqueRear;
   }
 
-  FmuValueReference vrs[2] = {vr_steer_deg_, vr_drive_torque_rear_};
-  double values[2] = {steer_deg, drive_torque_rear};
-  if (!fmu_client_set_real(fmu_, vrs, 2, values)) {
-    RCLCPP_ERROR(logger(), "fmu_client_set_real(steer_deg, drive_torque_rear) failed");
+  FmuValueReference vrs[3] = {vr_steer_fl_deg_in_, vr_steer_fr_deg_in_, vr_drive_torque_rear_};
+  double values[3] = {steer_fl_deg, steer_fr_deg, drive_torque_rear};
+  if (!fmu_client_set_real(fmu_, vrs, 3, values)) {
+    RCLCPP_ERROR(logger(), "fmu_client_set_real(steer_fl/fr_deg_in, drive_torque_rear) failed");
     return hardware_interface::return_type::ERROR;
   }
 

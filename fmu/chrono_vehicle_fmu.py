@@ -49,6 +49,19 @@ slave should let the master command these directly):
                         per-axle control is a model/FMU-level capability,
                         not something ros2_control's standard steering
                         controllers expose on their own.
+    independent_front_steer, steer_fl_deg_in, steer_fr_deg_in
+                        checked every do_step(), not structural like the
+                        parameters above (doesn't add/remove bodies, just
+                        changes which input feeds the existing FL/FR steer
+                        motors). independent_front_steer==0 (default):
+                        unchanged from before these inputs existed. Nonzero:
+                        steer_fl_deg_in/steer_fr_deg_in drive FL/FR
+                        directly (overrides ackermann's own geometric
+                        split too) -- for a caller like
+                        ackermann_steering_controller that already computes
+                        correct per-wheel Ackermann-corrected angles itself
+                        and would otherwise have that correction thrown
+                        away by averaging both into one shared steer_deg.
 
 Outputs mirror vehicle_log.csv's columns (position/orientation/speed/actual
 steer angles), so this can be validated against the exact same signals the
@@ -112,6 +125,19 @@ class ChronoVehicle(Fmi2Slave):
         self.drive_torque_rear = DRIVE_TORQUE
         self.drive_torque_front = 0.0
         self.drive_torque_mid = DRIVE_TORQUE
+        # independent_front_steer is checked every do_step(), not structural
+        # like the parameters above -- it doesn't add/remove bodies, just
+        # changes which input feeds the existing FL/FR steer motors. 0.0
+        # (default): unchanged from before this existed. Nonzero:
+        # steer_fl_deg_in/steer_fr_deg_in drive FL/FR directly instead of
+        # steer_deg (with or without ackermann's own geometric split) --
+        # for a caller (ackermann_steering_controller, via
+        # ChronoFmuSystemInterface) that already computes correct
+        # Ackermann-corrected per-wheel angles itself and would otherwise
+        # have that correction thrown away by averaging/only-one-input.
+        self.independent_front_steer = 0.0
+        self.steer_fl_deg_in = 0.0
+        self.steer_fr_deg_in = 0.0
 
         # ---- outputs ----
         self.chassis_x = 0.0
@@ -139,6 +165,15 @@ class ChronoVehicle(Fmi2Slave):
         )
         self.register_variable(
             Real("drive_torque_mid", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
+        )
+        self.register_variable(
+            Real("independent_front_steer", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
+        )
+        self.register_variable(
+            Real("steer_fl_deg_in", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
+        )
+        self.register_variable(
+            Real("steer_fr_deg_in", causality=Fmi2Causality.input, variability=Fmi2Variability.continuous)
         )
         for name in ("chassis_x", "chassis_y", "chassis_z", "roll_deg", "pitch_deg", "yaw_deg",
                      "speed_mps", "steer_FL_deg", "steer_FR_deg"):
@@ -197,7 +232,17 @@ class ChronoVehicle(Fmi2Slave):
         self._rear_motors, self._rear_throttle_functions = _group("R")
 
     def do_step(self, current_time: float, step_size: float) -> bool:
-        if self.ackermann:
+        if self.independent_front_steer:
+            # Externally-supplied per-wheel angles, passed straight through
+            # -- takes priority over ackermann (which computes its own
+            # split from a single steer_deg) since a caller that already
+            # sent independently-correct FL/FR angles has done a strictly
+            # more specific job than any geometry this FMU could recompute.
+            if "FL" in self._steer_functions:
+                self._steer_functions["FL"].SetConstant(math.radians(self.steer_fl_deg_in))
+            if "FR" in self._steer_functions:
+                self._steer_functions["FR"].SetConstant(math.radians(self.steer_fr_deg_in))
+        elif self.ackermann:
             left_deg, right_deg = ackermann_wheel_angles_deg(self.steer_deg, self._wheelbase, TRACK)
             if "FL" in self._steer_functions:
                 self._steer_functions["FL"].SetConstant(math.radians(left_deg))

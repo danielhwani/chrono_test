@@ -702,6 +702,27 @@ t=6.0s:  ...velocity=4.889749
 
 **진동/발산 없이 매끄럽게 수렴**하지만 **정상상태 오차가 남음**(목표 5.0 대비 6초 뒤 4.89, ~2%) — 적분항이 없는 순수 P 제어기라서 구름저항 같은 지속적 부하가 있으면 완전히 0으로 못 줄이는 게 정상적인 특성(버그 아님). 7단계에서 실제 `controller_manager`로 돌려볼 때 이 정도 오차가 문제가 되면 그때 I 항 추가를 고려.
 
+### ros2_control 준비 4c단계: 조향 입력 폭 — 평균 대신 독립 입력 2개로 FMU 확장
+
+4a에서 임시로 썼던 "좌/우 조향 커맨드 평균 → 공유 `steer_deg`" 근사는, `ackermann_steering_controller`가 이미 계산해서 보내주는 좌/우 개별 Ackermann 보정각을 버리는 셈이라 정확도 손실이 있었음. 두 가지 선택지가 있었는데:
+
+- (A) FMU를 좌/우 독립 입력 2개로 확장해서 컨트롤러가 계산한 값을 그대로 통과시키기
+- (B) 기존 pythonfmu의 `ackermann` 파라미터처럼, FMU가 자체적으로 하나의 조향각에서 기하학적으로 좌/우를 다시 계산하기
+
+**(B)를 살펴보니 이미 `chrono_vehicle_fmu.py`에 `ackermann` 파라미터로 구현돼 있었음** — 근데 이건 "호출자가 하나의 대표 조향각만 주고 FMU가 알아서 기하학 계산"하는 용도라, `ackermann_steering_controller`처럼 **호출자가 이미 좌/우를 따로 정확하게 계산해서 주는 경우**엔 안 맞음(이중 계산이거나 오히려 컨트롤러의 보정을 무시하는 꼴). 그래서 **(A)로 결정** — 새 입력을 추가:
+
+```
+independent_front_steer  input [0/1]  매 step()마다 확인(build-time 구조 변경 아님 — four_wheel_drive/six_wheel과 달리 바디 추가/제거가 없어서 매 스텝 체크해도 무방)
+steer_fl_deg_in           input [deg]  independent_front_steer!=0일 때만 사용
+steer_fr_deg_in           input [deg]  독립_front_steer!=0일 때만 사용
+```
+
+우선순위: `independent_front_steer` > `ackermann` > 기존 단일 `steer_deg` (기본값 0이면 이전과 완전히 동일, bit-exact 유지). 네이티브 C++(`vehicle_native.cpp`, VR 15/16/17 추가)과 pythonfmu(`chrono_vehicle_fmu.py`) 둘 다에 동일하게 포팅.
+
+**검증**: `validate_native_vehicle_fmu.py`에 5번째 시나리오 추가(FL=15°, FR=8°로 서로 다른 각도 커맨드) — 기존 4개 시나리오는 그대로 bit-exact(`0.00e+00`) 유지, 새 시나리오도 `steer_FL_deg`/`steer_FR_deg` 출력이 커맨드한 값과 정확히 일치(`1.78e-15`, 부동소수점 오차 수준)하면서 pythonfmu·네이티브 C++ 둘 다 일치함.
+
+`ChronoFmuSystemInterface`의 `write()`도 평균 로직을 걷어내고 좌/우 커맨드를 각각 `steer_fl_deg_in`/`steer_fr_deg_in`으로 그대로 전달하도록 수정, `on_init()`에서 `independent_front_steer=1.0`을 한 번 세팅. 검증 하네스로 재확인: 왼쪽에만 0.3 rad 커맨드했을 때 `front_left_steering_joint/position = 0.300000`, `front_right_steering_joint/position = 0.000000`으로 **평균 없이 정확히** 반영됨(이전엔 둘 다 0.15로 나왔던 것과 대조).
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

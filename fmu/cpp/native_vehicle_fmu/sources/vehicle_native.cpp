@@ -53,6 +53,32 @@
  *                                          driven when present)
  *  14: six_wheel          input   [0/1]   read once in build(); nonzero
  *                                          switches to the 3-axle truck
+ *  15: steer_fl_deg_in    input   [deg]   independent front-left steer
+ *                                          angle (only used if
+ *                                          independent_front_steer != 0)
+ *  16: steer_fr_deg_in    input   [deg]   independent front-right steer
+ *                                          angle (only used if
+ *                                          independent_front_steer != 0)
+ *  17: independent_front_steer
+ *                          input   [0/1]   checked every step(), not just
+ *                                          once at build (doesn't add/remove
+ *                                          bodies like four_wheel_drive/
+ *                                          six_wheel do -- just changes
+ *                                          which input feeds the existing
+ *                                          steer motors). 0 (default): FL
+ *                                          and FR both follow steer_deg,
+ *                                          exactly as before -- bit-exact
+ *                                          with every earlier validation
+ *                                          run. Nonzero: FL/FR follow
+ *                                          steer_fl_deg_in/steer_fr_deg_in
+ *                                          independently instead, letting a
+ *                                          controller that already computes
+ *                                          Ackermann-corrected per-wheel
+ *                                          angles (e.g.
+ *                                          ackermann_steering_controller)
+ *                                          feed them straight through
+ *                                          instead of being averaged down
+ *                                          to one shared angle.
  *
  * Build: see ../build.sh
  */
@@ -150,6 +176,9 @@ struct ModelInstance {
     fmi2Real four_wheel_drive_in = 0.0;  // read once in build(); 0.0=off (default, rear-only)
     fmi2Real drive_torque_mid_in = DRIVE_TORQUE_DEFAULT;
     fmi2Real six_wheel_in = 0.0;         // read once in build(); 0.0=off (default, 4-wheel car)
+    fmi2Real steer_fl_deg_in = 0.0;
+    fmi2Real steer_fr_deg_in = 0.0;
+    fmi2Real independent_front_steer_in = 0.0;  // checked every step(), not build-time (see file header)
 
     fmi2Real chassis_x = 0.0, chassis_y = 0.0, chassis_z = 0.0;
     fmi2Real roll_deg = 0.0, pitch_deg = 0.0, yaw_deg = 0.0;
@@ -299,12 +328,22 @@ static void apply_differential(Corner& left, Corner& right, double nominal_torqu
 }
 
 void ModelInstance::step(double dt) {
-    double steer_rad = steer_deg_in * (CH_PI / 180.0);
-    for (auto& c : corners) {
-        if (c.steer_fn) {
-            c.steer_fn->SetConstant(steer_rad);
-            c.steer_deg_actual = steer_deg_in;
+    // independent_front_steer==0 (default): every steered corner (FL/FR)
+    // follows the single shared steer_deg_in, exactly as before this input
+    // existed -- bit-exact with every earlier validation run. Nonzero: FL
+    // (corners[0]) and FR (corners[1]) follow their own
+    // steer_fl_deg_in/steer_fr_deg_in instead (see file header comment).
+    bool independent_steer = independent_front_steer_in != 0.0;
+    for (int i = 0; i < 6; ++i) {
+        Corner& c = corners[i];
+        if (!c.steer_fn) continue;
+        double deg = steer_deg_in;
+        if (independent_steer) {
+            if (i == 0) deg = steer_fl_deg_in;
+            else if (i == 1) deg = steer_fr_deg_in;
         }
+        c.steer_fn->SetConstant(deg * (CH_PI / 180.0));
+        c.steer_deg_actual = deg;
     }
 
     apply_differential(corners[4], corners[5], drive_torque_rear_in);   // rear axle, always driven
@@ -350,6 +389,9 @@ void ModelInstance::step(double dt) {
 #define VR_FOUR_WHEEL_DRIVE 12
 #define VR_DRIVE_TORQUE_MID 13
 #define VR_SIX_WHEEL 14
+#define VR_STEER_FL_DEG_IN 15
+#define VR_STEER_FR_DEG_IN 16
+#define VR_INDEPENDENT_FRONT_STEER 17
 
 static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
@@ -359,6 +401,9 @@ static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
         case VR_FOUR_WHEEL_DRIVE: return &m->four_wheel_drive_in;
         case VR_DRIVE_TORQUE_MID: return &m->drive_torque_mid_in;
         case VR_SIX_WHEEL: return &m->six_wheel_in;
+        case VR_STEER_FL_DEG_IN: return &m->steer_fl_deg_in;
+        case VR_STEER_FR_DEG_IN: return &m->steer_fr_deg_in;
+        case VR_INDEPENDENT_FRONT_STEER: return &m->independent_front_steer_in;
         case VR_CHASSIS_X: return &m->chassis_x;
         case VR_CHASSIS_Y: return &m->chassis_y;
         case VR_CHASSIS_Z: return &m->chassis_z;

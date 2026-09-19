@@ -27,7 +27,7 @@ STEER_DEG, STEER_START = 20.0, 1.0
 DRIVE_TORQUE = 260.0
 DRIVE_TORQUE_FRONT = 150.0
 DRIVE_TORQUE_MID = 200.0
-OUTPUTS = ("chassis_x", "chassis_y", "chassis_z", "yaw_deg", "speed_mps")
+OUTPUTS = ("chassis_x", "chassis_y", "chassis_z", "yaw_deg", "speed_mps", "steer_FL_deg", "steer_FR_deg")
 
 
 def _set_bool_or_real(fmu, variables, vr, name, value):
@@ -40,7 +40,8 @@ def _set_bool_or_real(fmu, variables, vr, name, value):
         fmu.setReal([vr[name]], [1.0 if value else 0.0])
 
 
-def run(fmu_path, four_wheel_drive=False, six_wheel=False):
+def run(fmu_path, four_wheel_drive=False, six_wheel=False, independent_front_steer=False,
+        steer_fl_deg=0.0, steer_fr_deg=0.0):
     md = read_model_description(fmu_path)
     variables = {v.name: v for v in md.modelVariables}
     vr = {name: v.valueReference for name, v in variables.items()}
@@ -61,8 +62,17 @@ def run(fmu_path, four_wheel_drive=False, six_wheel=False):
         steer = STEER_DEG if t > STEER_START else 0.0
         front_torque = DRIVE_TORQUE_FRONT if four_wheel_drive else 0.0
         mid_torque = DRIVE_TORQUE_MID if six_wheel else DRIVE_TORQUE
-        fmu.setReal([vr["steer_deg"], vr["drive_torque_rear"], vr["drive_torque_front"], vr["drive_torque_mid"]],
-                    [steer, DRIVE_TORQUE, front_torque, mid_torque])
+        if independent_front_steer:
+            fl = steer_fl_deg if t > STEER_START else 0.0
+            fr = steer_fr_deg if t > STEER_START else 0.0
+            fmu.setReal(
+                [vr["independent_front_steer"], vr["steer_fl_deg_in"], vr["steer_fr_deg_in"],
+                 vr["drive_torque_rear"], vr["drive_torque_front"], vr["drive_torque_mid"]],
+                [1.0, fl, fr, DRIVE_TORQUE, front_torque, mid_torque])
+        else:
+            fmu.setReal(
+                [vr["steer_deg"], vr["drive_torque_rear"], vr["drive_torque_front"], vr["drive_torque_mid"]],
+                [steer, DRIVE_TORQUE, front_torque, mid_torque])
         fmu.doStep(currentCommunicationPoint=t, communicationStepSize=DT)
         t += DT
 
@@ -99,14 +109,16 @@ def main():
                         four_wheel_drive=False, six_wheel=True)
     worst_6x6 = compare("6x6 (six_wheel + four_wheel_drive, rear=260 mid=200 front=150 N*m)",
                          four_wheel_drive=True, six_wheel=True)
-    worst = max(worst_2wd, worst_4wd, worst_6w, worst_6x6)
+    worst_indep = compare("4-wheel, independent_front_steer=True (FL=15 deg, FR=8 deg)",
+                           independent_front_steer=True, steer_fl_deg=15.0, steer_fr_deg=8.0)
+    worst = max(worst_2wd, worst_4wd, worst_6w, worst_6x6, worst_indep)
 
     if worst > 1e-4:
         raise SystemExit(f"FAIL: worst diff {worst:.2e} exceeds tolerance -- "
                           f"the C++ port diverged from the pythonfmu reference")
-    print(f"OK -- pythonfmu and native C++ agree in all four configurations (worst diff {worst:.2e}), "
-          f"confirming the C++ port (four_wheel_drive and six_wheel both) is a faithful "
-          f"translation of the same model.")
+    print(f"OK -- pythonfmu and native C++ agree in all five configurations (worst diff {worst:.2e}), "
+          f"confirming the C++ port (four_wheel_drive, six_wheel, and independent_front_steer all) "
+          f"is a faithful translation of the same model.")
 
 
 if __name__ == "__main__":
