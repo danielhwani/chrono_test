@@ -610,6 +610,27 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./fmu_client_cpp_check ..
 
 **검증**: 4륜/2WD(`steer=10`)와 6x6(`rear=300 mid=200 front=100`) 두 시나리오 다 돌려서, **C(`fmu_driver`)로 얻었던 수치와 소수점까지 정확히 일치**함을 확인(`chassis_x=2.311297`/`yaw_deg=-10.534322`, `chassis_x=6.189703`/`speed_mps=4.122292`) — `fmu_client.h`의 `extern "C"` 래핑이 실제로 C++에서도 문제없이 동작한다는 직접적인 증거.
 
+### ros2_control 준비 3단계: 최소 URDF (`ros2_control/urdf/chrono_vehicle.urdf`)
+
+4륜 차량(`vehicle_native.fmu`, 6x6은 아직) 기준으로 조인트 토폴로지 + `<ros2_control>` 태그만 있는 최소 URDF를 만듦 — 시각화/충돌 형상은 없음(RViz/Gazebo용이 아니라 `controller_manager`가 읽을 용도). 조인트 위치 좌표는 `vehicle_native.cpp`의 실제 상수(`WHEELBASE=2.6, TRACK=1.5, WHEEL_RADIUS=0.32`)를 그대로 씀 — 임의의 값이 아님.
+
+**중요한 발견 — 실제 `ros2_controllers` 소스(GitHub, humble 브랜치)를 직접 확인**: `steering_controllers_library.cpp`의 `command_interface_configuration()`을 보면, `front_wheels_names`는 `HW_IF_POSITION`(조향각) 커맨드를, **`rear_wheels_names`는 `HW_IF_VELOCITY`(속도)** 커맨드를 받게 돼 있음 — `HW_IF_EFFORT`(토크)가 아님. 즉:
+
+```
+front_left_steering_joint / front_right_steering_joint  → command_interface: position
+rear_left_wheel_joint / rear_right_wheel_joint           → command_interface: velocity
+```
+
+**이게 왜 중요하냐면**, 우리 FMU의 `drive_torque_rear`/`_mid`/`_front` 입력은 전부 **토크(N·m)**인데, 컨트롤러가 실제로 내려주는 건 **속도(rad/s) 명령**입니다. 즉 4번(`ChronoFmuSystemInterface`)이 컨트롤러의 속도 명령을 FMU의 `drive_torque_*` 입력에 그냥 그대로 꽂을 수가 없고, **속도→토크로 바꿔주는 작은 제어 루프**(예: 명령 속도 vs 측정 속도를 비교하는 P 제어기)를 플러그인 안에 직접 넣어야 한다는 뜻입니다. 이건 이전에 열어뒀던 "read/write 순서" 질문과는 또 다른, 새로 발견한 요구사항이라 4번 작업 범위에 추가로 기록해둠.
+
+**검증**: `check_urdf`(URDF 파싱/기구학 트리 유효성)와 `xmllint`(XML 형식) 둘 다 통과. 실제 `ros2_control_demos`의 공식 예제(`diffbot.ros2_control.xacro`)와 `<joint>`/`<command_interface>`/`<state_interface>` 태그 구조가 일치하는 것도 대조 확인. 다만 **`controller_manager`가 실제로 이걸 로드해서 돌려보는 건 아직 안 함**(4번 플러그인 + 6번 launch 파일이 있어야 가능) — 이번 단계는 문법/구조 검증까지.
+
+```bash
+source /opt/ros/humble/setup.bash
+check_urdf ros2_control/urdf/chrono_vehicle.urdf
+xmllint --noout ros2_control/urdf/chrono_vehicle.urdf
+```
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
