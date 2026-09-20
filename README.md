@@ -762,6 +762,53 @@ pluginlib successfully created an instance: N19chrono_ros2_control24ChronoFmuSys
 LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ./build/chrono_ros2_control/chrono_fmu_system_interface_check urdf/chrono_vehicle.urdf
 ```
 
+### ros2_control 준비 6단계: 컨트롤러 설정 YAML + launch 파일
+
+`chrono_ros2_control/config/chrono_vehicle_controllers.yaml` + `chrono_ros2_control/launch/chrono_vehicle_control.launch.py` — 실제 `controller_manager`(`ros2_control_node`) + `joint_state_broadcaster` + `ackermann_steering_controller`를 띄우는 launch 파일. `display.launch.py`(step 3 side task)는 `joint_state_publisher_gui` 슬라이더로 조인트를 흉내만 냈는데, 이건 진짜 컨트롤러가 진짜 FMU를 구동함.
+
+**`ackermann_steering_controller` 파라미터는 실제 설치된 generated 헤더로 확인**(추측 아님) — `/opt/ros/humble/include/{steering_controllers_library,ackermann_steering_controller}_parameters.hpp`(generate_parameter_library가 만든 코드, 모든 파라미터명·기본값·설명이 그대로 들어있음). `front_wheels_names`/`rear_wheels_names`와 5개 기하 파라미터(`wheelbase`, `front/rear_wheel_track`, `front/rear_wheels_radius`)는 기본값이 없어(0.0 또는 빈 리스트) 필수 — `vehicle_native.cpp`/`simple_vehicle.py`의 실제 상수(WHEELBASE=2.6, TRACK=1.5, WHEEL_RADIUS=0.32) 그대로 씀. `open_loop`/`position_feedback` 둘 다 기본값(`false`)이 이미 우리 URDF(rear를 `velocity` 인터페이스로 선언)와 맞아서 건드리지 않음.
+
+**launch 구조도 실제 공식 예제로 확인**: `ros2_control_demos` `example_2`의 `diffbot.launch.py`를 GitHub에서 받아 대조. `controller_manager`에 URDF를 파라미터로 직접 주는 대신, `robot_state_publisher`가 발행하는 `/robot_description` 토픽에 `~/robot_description`을 리매핑하는 게 공식 패턴 — 그대로 따름. 컨트롤러 스포너도 `joint_state_broadcaster`가 성공적으로 끝난 뒤에만 `ackermann_steering_controller`를 스폰하도록 `OnProcessExit` 이벤트 핸들러로 순서를 강제.
+
+```bash
+cd ros2_control
+source /opt/ros/humble/setup.bash
+colcon build --packages-select chrono_ros2_control
+source install/setup.bash
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ros2 launch chrono_ros2_control/launch/chrono_vehicle_control.launch.py
+```
+
+**실행 중 걸린 것 — 이 프로젝트 코드와 무관한 환경 문제, 원인을 끝까지 추적함**: 처음 두 번 다 `joint_state_broadcaster`/`ackermann_steering_controller`(둘 다 순정 ROS2 패키지, 우리가 만든 코드 아님) 로딩이 `Resource temporarily unavailable`/`failed to map segment from shared object`로 실패. 우리 플러그인(`ChronoFmuSystemInterface`)은 매번 `Initialize`/`configure`/`activate` 전부 성공했기 때문에, "메모리가 부족한가?" 하고 의심했다가(사용자가 크롬을 다 닫아도 재현됨 — 전체 RAM 부족이 아니라는 신호), 실제 원인을 `controller_manager`의 진짜 소스(`ros2_control_node.cpp`, GitHub)에서 찾음:
+
+```cpp
+const bool has_realtime = realtime_tools::has_realtime_kernel();
+const bool lock_memory = cm->get_parameter_or<bool>("lock_memory", has_realtime);
+if (lock_memory) { realtime_tools::lock_memory(); /* mlockall() */ }
+```
+
+이 머신이 real-time 커널이라 `lock_memory`가 기본값으로 `true`가 되고, `mlockall()`이 호출되면 그 이후 로드되는 모든 컨트롤러 라이브러리까지 RAM에 잠기려고 하는데, 그 예산이 `ulimit -l`(이 머신은 soft==hard==983MB, 일반 사용자 권한으론 못 올림)에 막혀서 실패한 것 — 전체 RAM 여유와는 무관한, 잠글 수 있는 메모리 한도 문제였음. `lock_memory: false`를 `controller_manager`의 `ros__parameters`에 명시적으로 추가해서 해결(공식적으로 노출된 파라미터, 지금 단계에서 hard real-time 보장이 필요하지 않으므로 합리적인 선택 — 나중에 실시간성이 진짜 요구사항이 되면 재검토).
+
+**검증**: 고친 뒤 재시도하니 한 번에 성공:
+```
+[joint_state_broadcaster]: Configured and activated joint_state_broadcaster
+[ackermann_steering_controller]: configure successful
+[ackermann_steering_controller]: Configured and activated ackermann_steering_controller
+```
+`ros2 control list_controllers`/`list_hardware_interfaces`로 실행 중 상태까지 확인:
+```
+joint_state_broadcaster       joint_state_broadcaster/JointStateBroadcaster              active
+ackermann_steering_controller ackermann_steering_controller/AckermannSteeringController  active
+
+command interfaces
+	ackermann_steering_controller/angular/velocity [available] [unclaimed]
+	ackermann_steering_controller/linear/velocity [available] [unclaimed]
+	front_left_steering_joint/position [available] [claimed]
+	front_right_steering_joint/position [available] [claimed]
+	rear_left_wheel_joint/velocity [available] [claimed]
+	rear_right_wheel_joint/velocity [available] [claimed]
+```
+`ackermann_steering_controller`가 우리 플러그인의 4개 조인트 커맨드 인터페이스를 전부 `claimed` 상태로 점유하고, 자기 자신은 `linear/velocity`/`angular/velocity`(체이너블 컨트롤러의 레퍼런스 인터페이스, `/cmd_vel` 명령이 내부적으로 매핑되는 지점)를 노출 — 실제로 명령을 내려서 FMU 거동을 검증하는 건 7단계의 몫으로 남겨둠.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

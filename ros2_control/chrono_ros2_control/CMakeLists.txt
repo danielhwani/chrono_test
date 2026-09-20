@@ -59,6 +59,10 @@ install(
   DESTINATION include
 )
 install(
+  DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME}
+)
+install(
   TARGETS chrono_fmu_system_interface
   EXPORT export_chrono_fmu_system_interface
   ARCHIVE DESTINATION lib

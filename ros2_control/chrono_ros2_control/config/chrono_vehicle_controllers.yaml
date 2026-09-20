@@ -1,0 +1,61 @@
+# Step 6 of the ros2_control prep plan. controller_manager + controller
+# parameters. update_rate matches native_vehicle_fmu/modelDescription.xml's
+# DefaultExperiment stepSize=0.002s (500 Hz) -- write() still steps the FMU
+# by a hardcoded 0.002s regardless of the real period controller_manager
+# passes in (see the TODO in chrono_fmu_system_interface.cpp), so keeping
+# controller_manager's own rate at exactly 500 Hz is what makes FMU
+# simulated time and wall-clock time actually agree for now.
+#
+# ackermann_steering_controller's parameter names/defaults verified against
+# the real installed generated headers (not guessed) --
+# steering_controllers_library_parameters.hpp and
+# ackermann_steering_controller_parameters.hpp under
+# /opt/ros/humble/include/. front_wheels_names/rear_wheels_names and the
+# five geometry parameters (wheelbase, front/rear_wheel_track,
+# front/rear_wheels_radius) have no defaults (0.0 or empty) and are
+# required; everything else below is left at the controller's own default
+# (open_loop: false, position_feedback: false -- already matches this
+# project's URDF, which declares rear wheel command/state interfaces as
+# `velocity`, not `position`).
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz
+
+    # controller_manager defaults `lock_memory` to true whenever it detects
+    # a real-time kernel (ros2_control_node.cpp:
+    # get_parameter_or<bool>("lock_memory", has_realtime_kernel())), which
+    # calls mlockall() -- every later dlopen of a controller's .so then
+    # also has to be locked into RAM, capped by ulimit -l (RLIMIT_MEMLOCK).
+    # On this machine that's a fixed ~983MB (soft==hard, can't be raised
+    # without root + a fresh login), and it was getting exceeded while
+    # loading joint_state_broadcaster/ackermann_steering_controller
+    # ("Resource temporarily unavailable" / "failed to map segment from
+    # shared object" -- NOT a memory-amount problem, closing other
+    # programs doesn't help, it's this specific locked-page budget).
+    # Explicitly false here since step 6/7 don't need hard RT guarantees
+    # yet -- revisit if real-time determinism becomes a requirement later.
+    lock_memory: false
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    ackermann_steering_controller:
+      type: ackermann_steering_controller/AckermannSteeringController
+
+ackermann_steering_controller:
+  ros__parameters:
+    front_steering: true
+    front_wheels_names: ["front_left_steering_joint", "front_right_steering_joint"]
+    rear_wheels_names: ["rear_left_wheel_joint", "rear_right_wheel_joint"]
+
+    # matches WHEELBASE/TRACK/WHEEL_RADIUS in
+    # fmu/cpp/native_vehicle_fmu/sources/vehicle_native.cpp and
+    # simple_vehicle.py -- not arbitrary values.
+    wheelbase: 2.6
+    front_wheel_track: 1.5
+    rear_wheel_track: 1.5
+    front_wheels_radius: 0.32
+    rear_wheels_radius: 0.32
+
+    base_frame_id: base_link
+    odom_frame_id: odom
