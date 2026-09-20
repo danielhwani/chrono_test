@@ -108,6 +108,17 @@ private:
   // constraint change once, see 4WD's zero-torque-front-motor finding in
   // memory). Roughly 3x the FMU's own default drive_torque_rear (260.0).
   static constexpr double kMaxDriveTorqueRear = 800.0;
+  // Step 7 finding: at rest (vel_cmd=0), the vehicle's own suspension
+  // settling produces small natural noise in vel_measured (~0.01-0.07
+  // rad/s, observed via an A/B test with drive_torque_rear forced to 0).
+  // A pure P term with no deadband reacts to that noise at full gain and
+  // pumps energy into it instead of damping it, causing an exponential
+  // runaway from a standstill -- reproduced and root-caused live against
+  // a real controller_manager, not seen in the 4b bench test (which only
+  // ever tested driving toward a large nonzero target, never holding
+  // near-zero). Set safely above the observed noise floor; real velocity
+  // commands (normally several rad/s) are far above this and unaffected.
+  static constexpr double kVelocityDeadband = 0.1;
 };
 
 }  // namespace chrono_ros2_control

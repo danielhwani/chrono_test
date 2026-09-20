@@ -178,7 +178,25 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
     }
   }
   const double vel_cmd = (vel_cmd_count > 0 ? vel_cmd_sum / vel_cmd_count : 0.0);
-  double drive_torque_rear = kVelocityKp * (vel_cmd - vel_measured);
+  const double vel_error = vel_cmd - vel_measured;
+  // Step 7 finding, root-caused via an A/B test (forcing drive_torque_rear
+  // to exactly 0 and watching vel_measured stay bounded at ~0.01-0.07 rad/s
+  // -- normal suspension settling noise -- vs. the unmodified P loop
+  // exponentially diverging from a standstill with vel_cmd=0, e.g.
+  // 0.03->1.5->8.6->32+ rad/s over a few seconds despite drive_torque_rear
+  // saturating at -800 the whole time): a pure P term with no deadband
+  // reacts to that small natural noise with full gain, and ends up pumping
+  // energy into it instead of damping it -- classic high-gain-on-noise
+  // resonance, not a measurement bug (vel_measured's approximation itself
+  // -- speed_mps / kWheelRadius -- was already known/documented; the loop
+  // built on top of it was the actual problem). kVelocityDeadband is set
+  // safely above the observed noise floor so real commands (normally
+  // several rad/s) are unaffected, while near-zero noise now yields zero
+  // torque instead of feeding back on itself.
+  double drive_torque_rear = 0.0;
+  if (std::abs(vel_error) >= kVelocityDeadband) {
+    drive_torque_rear = kVelocityKp * vel_error;
+  }
   if (drive_torque_rear > kMaxDriveTorqueRear) {
     drive_torque_rear = kMaxDriveTorqueRear;
   } else if (drive_torque_rear < -kMaxDriveTorqueRear) {

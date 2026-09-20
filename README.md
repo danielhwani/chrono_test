@@ -809,6 +809,59 @@ command interfaces
 ```
 `ackermann_steering_controller`가 우리 플러그인의 4개 조인트 커맨드 인터페이스를 전부 `claimed` 상태로 점유하고, 자기 자신은 `linear/velocity`/`angular/velocity`(체이너블 컨트롤러의 레퍼런스 인터페이스, `/cmd_vel` 명령이 내부적으로 매핑되는 지점)를 노출 — 실제로 명령을 내려서 FMU 거동을 검증하는 건 7단계의 몫으로 남겨둠.
 
+### ros2_control 준비 7단계(마지막): 통합 테스트 — 실제 명령으로 FMU 구동 확인, 그리고 런어웨이 버그 발견/수정
+
+6단계까지는 컨트롤러가 뜨고 활성화되는 것까지만 확인했음. 7단계는 실제로 `/cmd_vel` 격의 명령을 흘려보내서 FMU가 진짜로 반응하는지 확인하는 단계.
+
+```bash
+# 터미널 1: 6단계 launch 파일 그대로
+# 터미널 2:
+source /opt/ros/humble/setup.bash
+ros2 topic pub -r 20 /ackermann_steering_controller/reference_unstamped geometry_msgs/msg/Twist "{linear: {x: 1.0}, angular: {z: 0.3}}"
+```
+(`use_stamped_vel` 기본값이 `false`라서 토픽 이름이 `~/reference_unstamped` — 실제 `steering_controllers_library.cpp` 소스에서 확인, 흔히 알려진 `diff_drive_controller`류의 `~/cmd_vel`과 다름.)
+
+**성공한 부분**: `angular.z=0.3`을 흘려보내니 `front_left_steering_joint`/`front_right_steering_joint`가 `0.567`/`0.789` rad로 **서로 다른 값**으로 정확히 갈라져 들어감 — 4c(독립 조향)가 실전 파이프라인에서도 진짜로 동작함을 확인. 조향은 매 사이클 지연 없이 안정적으로 커맨드값 그대로 반영됨.
+
+**발견한 버그 — 정지 상태 런어웨이**: 뒷바퀴 속도(4b의 P 제어기)를 관찰하다가, 명령을 아예 안 보낸 상태(`vel_cmd=0`)에서도 `vel_measured`가 시간이 지날수록 이상하게 흔들리는 걸 목격. `write()`에 임시 진단 로그(매 0.1초마다 `vel_cmd`/`vel_measured`/`drive_torque_rear` 출력)를 넣고 다시 돌려서 원인을 직접 추적:
+
+```
+t=0.000 vel_cmd=0.0000 vel_measured=0.0000  drive_torque_rear=0.00
+t=1.400 vel_cmd=0.0000 vel_measured=0.0412  drive_torque_rear=-3.30
+t=4.000 vel_cmd=0.0000 vel_measured=1.5327  drive_torque_rear=-122.61
+t=5.700 vel_cmd=0.0000 vel_measured=10.5314 drive_torque_rear=-800.00 (클램프 한계)
+t=8.200 vel_cmd=0.0000 vel_measured=32.3934 drive_torque_rear=-800.00
+```
+
+토크가 계속 **음수(제동 방향)**로 걸리는데도 속도가 지수적으로 폭주. 원인을 직접 A/B로 검증하기 위해 `drive_torque_rear`를 강제로 `0.0`으로 고정하고 재실행:
+
+```
+t=7.400 ~ 10.300초: vel_measured가 0.009 ~ 0.07 rad/s 사이에서만 진동, 발산 없음
+```
+
+**결론**: `vel_measured`(근사 측정치) 자체는 정상 — 정차 중 서스펜션의 자연스러운 미세 진동(±0.01~0.07 rad/s) 수준의 노이즈일 뿐. 문제는 **필터/데드밴드 없는 순수 P 제어기(Kp=80)가 그 노이즈에 최대 이득으로 반응**하면서, 감쇠가 아니라 오히려 에너지를 주입하는 공진을 일으킨 것 — 고전적인 "노이즈에 고이득 피드백" 패턴. 4b의 벤치 테스트(`chrono_fmu_system_interface_check`)가 이걸 못 잡은 이유는 그 테스트가 처음부터 큰 목표 속도(5.0 rad/s)로만 검증했지, `vel_cmd=0`으로 정지 유지하는 시나리오는 한 번도 테스트 안 했기 때문 — **격리된 단위 테스트로는 못 잡고 실제 통합 테스트에서만 드러난 버그**, 7단계가 정확히 이런 걸 잡으라고 있는 단계.
+
+**PID로 확장하면 어떨지 검토했으나 기각**: I항은 지금 문제(노이즈 증폭)와 무관하고 위상 지연만 늘려 안정성을 더 해칠 수 있음. D항은 미분 자체가 노이즈를 증폭시키는 연산이라, 필터링 안 된 상태로 넣으면 오히려 폭주를 악화시킬 위험이 큼(실제 PID 구현체들이 D항에 별도 저역통과 필터를 끼우는 이유). 신호 자체가 노이즈투성이인 지금 상태에서 항을 늘리는 건 순서가 틀렸다고 판단.
+
+**해결 — 데드밴드 추가**: 오차(`vel_cmd - vel_measured`)가 `kVelocityDeadband`(0.1 rad/s, 관찰된 노이즈 상한보다 확실히 큰 값) 미만이면 토크를 아예 0으로 둠. 실제 명령(보통 수 rad/s대)은 이 문턱값을 훨씬 넘으므로 전혀 영향 없음.
+
+```cpp
+const double vel_error = vel_cmd - vel_measured;
+double drive_torque_rear = 0.0;
+if (std::abs(vel_error) >= kVelocityDeadband) {
+  drive_torque_rear = kVelocityKp * vel_error;
+}
+```
+
+**수정 후 재검증**:
+- 정지 상태로 16초 방치 → `velocity=0.010` 수준에서 안정, 발산 없음
+- 같은 명령(`linear.x=1.0, angular.z=0.3`)으로 10초간 재확인 → `2.86 → 2.75 → 2.05 → 2.02 → 2.09` rad/s로 합리적인 범위에서 유지, 예전 같은 진동/붕괴 없음
+- 벤치 테스트(`chrono_fmu_system_interface_check`, 5.0 rad/s 목표)도 데드밴드 적용 전과 **완전히 동일한 수치**로 재확인 — 큰 목표에는 영향 없음을 확인
+
+진단용 임시 로그(`fprintf`)는 원인 규명 후 코드에서 제거(커밋에 안 남김) — 대신 이 발견과 근거는 소스 코드 주석 + 여기 README에 남겨둠.
+
+이걸로 **ros2_control 준비 계획(0~7단계) 전체가 완료**됨. 남은 항목은 메모리의 "smaller open items" 목록(우선순위 낮음, 필요할 때 처리).
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
