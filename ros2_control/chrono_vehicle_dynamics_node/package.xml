@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>chrono_vehicle_dynamics_node</name>
+  <version>0.1.0</version>
+  <description>
+    FMU-wrapped dynamics node for the split ros2_control / ECU /
+    FMU-dynamics architecture: subscribes VehicleCommand (from
+    chrono_vehicle_ecu, Bridge 2), publishes VehicleStatus. Will wrap
+    fmu_client the same way ChronoFmuSystemInterface does today, just as
+    a plain node instead of a hardware_interface plugin -- see
+    ../../README.md.
+  </description>
+  <maintainer email="danielhwani@gmail.com">daniel</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>chrono_vehicle_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

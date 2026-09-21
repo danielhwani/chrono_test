@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>chrono_ecu_bridge_hw_interface</name>
+  <version>0.1.0</version>
+  <description>
+    hardware_interface::SystemInterface plugin that bridges ros2_control to
+    a downstream ECU node over chrono_vehicle_msgs/EcuCommand+EcuStatus
+    (Bridge 1 of the split ros2_control/ECU/FMU-dynamics architecture) --
+    see ../../README.md.
+  </description>
+  <maintainer email="danielhwani@gmail.com">daniel</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>chrono_vehicle_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -862,6 +862,40 @@ if (std::abs(vel_error) >= kVelocityDeadband) {
 
 이걸로 **ros2_control 준비 계획(0~7단계) 전체가 완료**됨. 남은 항목은 메모리의 "smaller open items" 목록(우선순위 낮음, 필요할 때 처리).
 
+### ros2_control 확장 구상 — 상위제어기/가상 ECU/동역학 계산기 3분리 아키텍처
+
+7단계까지 완성한 `chrono_ros2_control`(단일 프로세스: `controller_manager`가 `ChronoFmuSystemInterface`를 직접 `dlopen`해서 FMU까지 같은 프로세스 안에서 계산)은 **그대로 유지**함 — 아래는 그 위에 얹는 별도의 새 시도이지 기존 걸 대체하는 게 아님.
+
+**동기**: `ros2_control`을 Nav2 같은 자율주행 스택과 함께 "상위 제어기" 계층으로 두고, 그 아래 "저수준 ECU"를 별도로 분리하는 구조를 구상함 — ECU가 실제 하드웨어가 아니라 가상(소프트웨어)이어도 같은 PC에 둘 수 있다는 전제. 실제 차량이라면 상위 제어기와 ECU 사이는 CAN 버스로 연결되는데, 그 경계를 지금은 커스텀 ROS2 토픽으로 흉내내고(나중에 진짜 CAN으로 교체 가능하도록), ECU와 동역학 계산기(FMU) 사이도 인프로세스가 아니라 별도 ROS2 토픽 교환으로 분리하기로 함 — **브릿지가 두 개** 필요한 3-프로세스 구조.
+
+```
+[Nav2 + ros2_control (ackermann_steering_controller)]
+         │  브릿지 1: EcuCommand/EcuStatus (CAN 경계를 흉내냄, 실제 CAN이면 이 브릿지가 필요없어짐)
+[가상 ECU 노드]
+         │  브릿지 2: VehicleCommand/VehicleStatus (인프로세스 아님, 별도 프로세스)
+[FMU 감싼 동역학 계산기 노드]
+```
+
+**메시지 설계 — 구조는 비슷해도 단위/의미는 다름** (`chrono_vehicle_msgs`): 두 브릿지가 똑같은 메시지를 쓰면 ECU가 아무 일도 안 하는 셈이라, 일부러 다르게 설계:
+
+- **`EcuCommand`/`EcuStatus`** (브릿지 1): `hardware_interface`와 동일 단위 — `steer_fl_rad`/`steer_fr_rad`(라디안), `traction_vel_rad_s`(rad/s, **속도**)
+- **`VehicleCommand`/`VehicleStatus`** (브릿지 2): FMU 고유 단위 — `steer_fl_deg`/`steer_fr_deg`(도), `drive_torque_front_nm`/`drive_torque_mid_nm`/`drive_torque_rear_nm`(N·m, **토크**, 축 단위 — 좌/우 분배는 FMU 내부 `apply_differential()`의 몫이지 ECU가 알 필요 없음). `drive_torque_mid_nm`은 6x6 확장을 염두에 두고 미리 넣어둠(지금은 `six_wheel=false`라 무시됨, FMU 자체가 써온 것과 같은 "additive, 기본 꺼짐" 패턴).
+
+이름 규칙: `VehicleCommand`/`VehicleStatus`가 "차량(FMU)에게 보내는 명령/차량이 보고하는 상태"를 뜻하므로, 대칭적으로 브릿지 1은 `EcuCommand`/`EcuStatus`("ECU에게 보내는 명령/ECU가 보고하는 상태")로 정함.
+
+**4WD를 고려한 설계**: `ackermann_steering_controller`는 원래 트랙션 명령을 축 하나 분량만 내므로(표준 컨트롤러에 앞바퀴 구동 커맨드 인터페이스 자체가 없음), `EcuCommand.traction_vel_rad_s`는 축 개수와 무관하게 항상 값 하나. ECU가 이 값 하나로 P 제어기를 한 번만 계산해서 그 결과를 `drive_torque_front_nm`/`drive_torque_rear_nm` 양쪽에 동일하게 채워 넣는 구조(4WD를 지금 `ChronoFmuSystemInterface`에 추가한다면 쓸 방식과 동일한 원리).
+
+**스캐폴딩한 새 패키지 4개** (전부 `ros2_control/` 밑에 새로 추가, 기존 `chrono_ros2_control/`은 파일 하나도 안 건드림):
+
+1. `chrono_vehicle_msgs` — 위 4개 메시지 정의 (`rosidl_generate_interfaces`)
+2. `chrono_vehicle_ecu` — 가상 ECU 노드. 지금은 배선만 검증(빌드/실행/토픽 왕복 확인)하고 실제 로직(4b의 P 제어기+데드밴드, 4c의 단위 변환)은 의도적으로 TODO로 남겨둠 — "먼저 배선, 그다음 로직"이라는 이 프로젝트의 기존 패턴 그대로.
+3. `chrono_vehicle_dynamics_node` — FMU 감싼 동역학 노드. `fmu_client` 연동도 마찬가지로 TODO(지금 `chrono_fmu_system_interface.cpp`가 하는 걸 그대로 옮겨올 자리만 마련).
+4. `chrono_ecu_bridge_hw_interface` — `ros2_control`용 새 `SystemInterface` 플러그인(`ChronoEcuBridgeSystemInterface`). 이건 예외적으로 **실제로 완성**해서 넣음 — 이 클래스의 역할 자체가 순수 번역(필드 매핑)이라 나중에 채울 "더 어려운 로직"이 따로 없기 때문. `hardware_interface::SystemInterface`가 Humble에는 내장 ROS 노드가 없어서(실제 설치된 헤더로 확인 — `get_node()`/`get_logger()` 없음), 직접 `rclcpp::Node`를 만들고 백그라운드 스레드에서 `spin()`시켜 `EcuStatus` 구독 콜백을 처리하고, `read()`/`write()`는 뮤텍스로 보호된 최신값만 주고받음.
+
+**검증**: 5개 패키지(기존 `chrono_ros2_control` 포함) 전부 `colcon build` 성공. `chrono_fmu_system_interface_check`를 재실행해서 기존 패키지가 **완전히 그대로**(수치 동일) 동작함을 재확인. 새 노드 둘을 따로 띄우고 `ros2 topic pub`으로 `EcuCommand(steer_fl_rad=0.3, steer_fr_rad=0.2, traction_vel_rad_s=3.0)`을 발행 → `/vehicle_command`에 `steer_fl_deg=0.3, steer_fr_deg=0.2`로 정확히 반영(브릿지 1→2), 동역학 노드의 플레이스홀더 `VehicleStatus`(0/0/0)가 `/ecu_status`까지 되돌아옴(브릿지 2→1) — 3프로세스·2브릿지 배선이 끝까지 연결됨을 확인.
+
+**남은 일**: `chrono_vehicle_ecu`에 실제 P 제어기/데드밴드/단위변환 로직 이식, `chrono_vehicle_dynamics_node`에 실제 `fmu_client` 연동, 그리고 이 셋을 함께 띄우는 launch 파일 — 전부 다음 단계로 남겨둠.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
