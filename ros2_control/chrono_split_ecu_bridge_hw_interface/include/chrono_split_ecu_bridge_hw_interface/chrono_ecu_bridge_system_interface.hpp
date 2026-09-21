@@ -4,9 +4,9 @@
 // and still fully working standalone), but this class knows NOTHING about
 // the FMU. Its only job is Bridge 1: publish EcuCommand from the exported
 // command_interfaces, subscribe EcuStatus into the exported
-// state_interfaces (chrono_vehicle_msgs, see ../../chrono_vehicle_msgs/).
+// state_interfaces (chrono_split_msgs, see ../../chrono_split_msgs/).
 // The velocity->torque control loop and FMU access live downstream, in
-// chrono_vehicle_ecu and chrono_vehicle_dynamics_node.
+// chrono_split_ecu and chrono_split_dynamics_node.
 //
 // Uses the exact same joint parsing / JointIO pattern as
 // ChronoFmuSystemInterface (same URDF works unchanged -- Bridge 1's units
@@ -22,8 +22,8 @@
 // thread to process the EcuStatus subscription callback asynchronously;
 // read()/write() (called from controller_manager's own RT thread) only
 // ever touch the latched latest_ecu_status_ under ecu_status_mutex_.
-#ifndef CHRONO_ECU_BRIDGE_HW_INTERFACE__CHRONO_ECU_BRIDGE_SYSTEM_INTERFACE_HPP_
-#define CHRONO_ECU_BRIDGE_HW_INTERFACE__CHRONO_ECU_BRIDGE_SYSTEM_INTERFACE_HPP_
+#ifndef CHRONO_SPLIT_ECU_BRIDGE_HW_INTERFACE__CHRONO_ECU_BRIDGE_SYSTEM_INTERFACE_HPP_
+#define CHRONO_SPLIT_ECU_BRIDGE_HW_INTERFACE__CHRONO_ECU_BRIDGE_SYSTEM_INTERFACE_HPP_
 
 #include <mutex>
 #include <string>
@@ -35,10 +35,10 @@
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 
-#include "chrono_vehicle_msgs/msg/ecu_command.hpp"
-#include "chrono_vehicle_msgs/msg/ecu_status.hpp"
+#include "chrono_split_msgs/msg/ecu_command.hpp"
+#include "chrono_split_msgs/msg/ecu_status.hpp"
 
-namespace chrono_ecu_bridge_hw_interface
+namespace chrono_split_ecu_bridge_hw_interface
 {
 
 class ChronoEcuBridgeSystemInterface : public hardware_interface::SystemInterface
@@ -70,13 +70,13 @@ private:
   rclcpp::executors::SingleThreadedExecutor executor_;
   std::thread spin_thread_;
 
-  rclcpp::Publisher<chrono_vehicle_msgs::msg::EcuCommand>::SharedPtr ecu_command_pub_;
-  rclcpp::Subscription<chrono_vehicle_msgs::msg::EcuStatus>::SharedPtr ecu_status_sub_;
+  rclcpp::Publisher<chrono_split_msgs::msg::EcuCommand>::SharedPtr ecu_command_pub_;
+  rclcpp::Subscription<chrono_split_msgs::msg::EcuStatus>::SharedPtr ecu_status_sub_;
 
   std::mutex ecu_status_mutex_;
-  chrono_vehicle_msgs::msg::EcuStatus latest_ecu_status_;
+  chrono_split_msgs::msg::EcuStatus latest_ecu_status_;
 };
 
-}  // namespace chrono_ecu_bridge_hw_interface
+}  // namespace chrono_split_ecu_bridge_hw_interface
 
-#endif  // CHRONO_ECU_BRIDGE_HW_INTERFACE__CHRONO_ECU_BRIDGE_SYSTEM_INTERFACE_HPP_
+#endif  // CHRONO_SPLIT_ECU_BRIDGE_HW_INTERFACE__CHRONO_ECU_BRIDGE_SYSTEM_INTERFACE_HPP_

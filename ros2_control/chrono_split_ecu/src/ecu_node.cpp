@@ -5,11 +5,11 @@
 //
 //   ros2_control <-- EcuStatus/EcuCommand --> [this node] <-- VehicleStatus/VehicleCommand --> FMU dynamics node
 //
-// Bridge 1 (EcuCommand/EcuStatus, chrono_vehicle_msgs) uses
+// Bridge 1 (EcuCommand/EcuStatus, chrono_split_msgs) uses
 // hardware_interface-style units (rad, rad/s). Bridge 2
 // (VehicleCommand/VehicleStatus) uses the FMU's native units (deg, N*m).
 // This node is where that conversion belongs -- NOT in the new
-// SystemInterface (chrono_ecu_bridge_hw_interface), which is meant to stay
+// SystemInterface (chrono_split_ecu_bridge_hw_interface), which is meant to stay
 // a thin translation layer with zero FMU-specific knowledge, and NOT in
 // the FMU dynamics node, which should stay a thin fmu_client wrapper with
 // zero control-loop knowledge. Concretely, still TODO here (deliberately
@@ -28,20 +28,20 @@
 // latest VehicleStatus straight through to EcuStatus unconverted.
 #include <rclcpp/rclcpp.hpp>
 
-#include "chrono_vehicle_msgs/msg/ecu_command.hpp"
-#include "chrono_vehicle_msgs/msg/ecu_status.hpp"
-#include "chrono_vehicle_msgs/msg/vehicle_command.hpp"
-#include "chrono_vehicle_msgs/msg/vehicle_status.hpp"
+#include "chrono_split_msgs/msg/ecu_command.hpp"
+#include "chrono_split_msgs/msg/ecu_status.hpp"
+#include "chrono_split_msgs/msg/vehicle_command.hpp"
+#include "chrono_split_msgs/msg/vehicle_status.hpp"
 
-using chrono_vehicle_msgs::msg::EcuCommand;
-using chrono_vehicle_msgs::msg::EcuStatus;
-using chrono_vehicle_msgs::msg::VehicleCommand;
-using chrono_vehicle_msgs::msg::VehicleStatus;
+using chrono_split_msgs::msg::EcuCommand;
+using chrono_split_msgs::msg::EcuStatus;
+using chrono_split_msgs::msg::VehicleCommand;
+using chrono_split_msgs::msg::VehicleStatus;
 
-class ChronoVehicleEcuNode : public rclcpp::Node
+class ChronoSplitEcuNode : public rclcpp::Node
 {
 public:
-  ChronoVehicleEcuNode() : Node("chrono_vehicle_ecu")
+  ChronoSplitEcuNode() : Node("chrono_split_ecu")
   {
     ecu_command_sub_ = create_subscription<EcuCommand>(
       "ecu_command", rclcpp::SystemDefaultsQoS(),
@@ -59,7 +59,7 @@ public:
     // different jitter characteristics than controller_manager's dedicated
     // RT thread, worth measuring once real logic lands in this callback.
     timer_ = create_wall_timer(
-      std::chrono::milliseconds(2), std::bind(&ChronoVehicleEcuNode::tick, this));
+      std::chrono::milliseconds(2), std::bind(&ChronoSplitEcuNode::tick, this));
   }
 
 private:
@@ -96,7 +96,7 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ChronoVehicleEcuNode>());
+  rclcpp::spin(std::make_shared<ChronoSplitEcuNode>());
   rclcpp::shutdown();
   return 0;
 }

@@ -876,7 +876,7 @@ if (std::abs(vel_error) >= kVelocityDeadband) {
 [FMU 감싼 동역학 계산기 노드]
 ```
 
-**메시지 설계 — 구조는 비슷해도 단위/의미는 다름** (`chrono_vehicle_msgs`): 두 브릿지가 똑같은 메시지를 쓰면 ECU가 아무 일도 안 하는 셈이라, 일부러 다르게 설계:
+**메시지 설계 — 구조는 비슷해도 단위/의미는 다름** (`chrono_split_msgs`): 두 브릿지가 똑같은 메시지를 쓰면 ECU가 아무 일도 안 하는 셈이라, 일부러 다르게 설계:
 
 - **`EcuCommand`/`EcuStatus`** (브릿지 1): `hardware_interface`와 동일 단위 — `steer_fl_rad`/`steer_fr_rad`(라디안), `traction_vel_rad_s`(rad/s, **속도**)
 - **`VehicleCommand`/`VehicleStatus`** (브릿지 2): FMU 고유 단위 — `steer_fl_deg`/`steer_fr_deg`(도), `drive_torque_front_nm`/`drive_torque_mid_nm`/`drive_torque_rear_nm`(N·m, **토크**, 축 단위 — 좌/우 분배는 FMU 내부 `apply_differential()`의 몫이지 ECU가 알 필요 없음). `drive_torque_mid_nm`은 6x6 확장을 염두에 두고 미리 넣어둠(지금은 `six_wheel=false`라 무시됨, FMU 자체가 써온 것과 같은 "additive, 기본 꺼짐" 패턴).
@@ -887,14 +887,14 @@ if (std::abs(vel_error) >= kVelocityDeadband) {
 
 **스캐폴딩한 새 패키지 4개** (전부 `ros2_control/` 밑에 새로 추가, 기존 `chrono_ros2_control/`은 파일 하나도 안 건드림):
 
-1. `chrono_vehicle_msgs` — 위 4개 메시지 정의 (`rosidl_generate_interfaces`)
-2. `chrono_vehicle_ecu` — 가상 ECU 노드. 지금은 배선만 검증(빌드/실행/토픽 왕복 확인)하고 실제 로직(4b의 P 제어기+데드밴드, 4c의 단위 변환)은 의도적으로 TODO로 남겨둠 — "먼저 배선, 그다음 로직"이라는 이 프로젝트의 기존 패턴 그대로.
-3. `chrono_vehicle_dynamics_node` — FMU 감싼 동역학 노드. `fmu_client` 연동도 마찬가지로 TODO(지금 `chrono_fmu_system_interface.cpp`가 하는 걸 그대로 옮겨올 자리만 마련).
-4. `chrono_ecu_bridge_hw_interface` — `ros2_control`용 새 `SystemInterface` 플러그인(`ChronoEcuBridgeSystemInterface`). 이건 예외적으로 **실제로 완성**해서 넣음 — 이 클래스의 역할 자체가 순수 번역(필드 매핑)이라 나중에 채울 "더 어려운 로직"이 따로 없기 때문. `hardware_interface::SystemInterface`가 Humble에는 내장 ROS 노드가 없어서(실제 설치된 헤더로 확인 — `get_node()`/`get_logger()` 없음), 직접 `rclcpp::Node`를 만들고 백그라운드 스레드에서 `spin()`시켜 `EcuStatus` 구독 콜백을 처리하고, `read()`/`write()`는 뮤텍스로 보호된 최신값만 주고받음.
+1. `chrono_split_msgs` — 위 4개 메시지 정의 (`rosidl_generate_interfaces`)
+2. `chrono_split_ecu` — 가상 ECU 노드. 지금은 배선만 검증(빌드/실행/토픽 왕복 확인)하고 실제 로직(4b의 P 제어기+데드밴드, 4c의 단위 변환)은 의도적으로 TODO로 남겨둠 — "먼저 배선, 그다음 로직"이라는 이 프로젝트의 기존 패턴 그대로.
+3. `chrono_split_dynamics_node` — FMU 감싼 동역학 노드. `fmu_client` 연동도 마찬가지로 TODO(지금 `chrono_fmu_system_interface.cpp`가 하는 걸 그대로 옮겨올 자리만 마련).
+4. `chrono_split_ecu_bridge_hw_interface` — `ros2_control`용 새 `SystemInterface` 플러그인(`ChronoEcuBridgeSystemInterface`). 이건 예외적으로 **실제로 완성**해서 넣음 — 이 클래스의 역할 자체가 순수 번역(필드 매핑)이라 나중에 채울 "더 어려운 로직"이 따로 없기 때문. `hardware_interface::SystemInterface`가 Humble에는 내장 ROS 노드가 없어서(실제 설치된 헤더로 확인 — `get_node()`/`get_logger()` 없음), 직접 `rclcpp::Node`를 만들고 백그라운드 스레드에서 `spin()`시켜 `EcuStatus` 구독 콜백을 처리하고, `read()`/`write()`는 뮤텍스로 보호된 최신값만 주고받음.
 
 **검증**: 5개 패키지(기존 `chrono_ros2_control` 포함) 전부 `colcon build` 성공. `chrono_fmu_system_interface_check`를 재실행해서 기존 패키지가 **완전히 그대로**(수치 동일) 동작함을 재확인. 새 노드 둘을 따로 띄우고 `ros2 topic pub`으로 `EcuCommand(steer_fl_rad=0.3, steer_fr_rad=0.2, traction_vel_rad_s=3.0)`을 발행 → `/vehicle_command`에 `steer_fl_deg=0.3, steer_fr_deg=0.2`로 정확히 반영(브릿지 1→2), 동역학 노드의 플레이스홀더 `VehicleStatus`(0/0/0)가 `/ecu_status`까지 되돌아옴(브릿지 2→1) — 3프로세스·2브릿지 배선이 끝까지 연결됨을 확인.
 
-**남은 일**: `chrono_vehicle_ecu`에 실제 P 제어기/데드밴드/단위변환 로직 이식, `chrono_vehicle_dynamics_node`에 실제 `fmu_client` 연동, 그리고 이 셋을 함께 띄우는 launch 파일 — 전부 다음 단계로 남겨둠.
+**남은 일**: `chrono_split_ecu`에 실제 P 제어기/데드밴드/단위변환 로직 이식, `chrono_split_dynamics_node`에 실제 `fmu_client` 연동, 그리고 이 셋을 함께 띄우는 launch 파일 — 전부 다음 단계로 남겨둠.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

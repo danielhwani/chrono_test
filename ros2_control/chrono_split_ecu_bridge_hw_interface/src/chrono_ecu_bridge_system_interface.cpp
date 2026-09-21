@@ -1,10 +1,10 @@
-#include "chrono_ecu_bridge_hw_interface/chrono_ecu_bridge_system_interface.hpp"
+#include "chrono_split_ecu_bridge_hw_interface/chrono_ecu_bridge_system_interface.hpp"
 
-namespace chrono_ecu_bridge_hw_interface
+namespace chrono_split_ecu_bridge_hw_interface
 {
 
-using chrono_vehicle_msgs::msg::EcuCommand;
-using chrono_vehicle_msgs::msg::EcuStatus;
+using chrono_split_msgs::msg::EcuCommand;
+using chrono_split_msgs::msg::EcuStatus;
 
 hardware_interface::CallbackReturn ChronoEcuBridgeSystemInterface::on_init(
   const hardware_interface::HardwareInfo & info)
@@ -43,7 +43,7 @@ hardware_interface::CallbackReturn ChronoEcuBridgeSystemInterface::on_init(
   // (see header comment) -- create our own and spin it on a background
   // thread so the EcuStatus subscription callback runs independently of
   // controller_manager's own read()/write() calling thread.
-  node_ = std::make_shared<rclcpp::Node>("chrono_ecu_bridge_hw_interface_node");
+  node_ = std::make_shared<rclcpp::Node>("chrono_split_ecu_bridge_hw_interface_node");
   ecu_command_pub_ = node_->create_publisher<EcuCommand>("ecu_command", rclcpp::SystemDefaultsQoS());
   ecu_status_sub_ = node_->create_subscription<EcuStatus>(
     "ecu_status", rclcpp::SystemDefaultsQoS(), [this](const EcuStatus::SharedPtr msg) {
@@ -129,8 +129,8 @@ ChronoEcuBridgeSystemInterface::~ChronoEcuBridgeSystemInterface()
   }
 }
 
-}  // namespace chrono_ecu_bridge_hw_interface
+}  // namespace chrono_split_ecu_bridge_hw_interface
 
 #include "pluginlib/class_list_macros.hpp"
 PLUGINLIB_EXPORT_CLASS(
-  chrono_ecu_bridge_hw_interface::ChronoEcuBridgeSystemInterface, hardware_interface::SystemInterface)
+  chrono_split_ecu_bridge_hw_interface::ChronoEcuBridgeSystemInterface, hardware_interface::SystemInterface)

@@ -1,4 +1,4 @@
-// Scaffolding only (see chrono_vehicle_ecu/src/ecu_node.cpp's header
+// Scaffolding only (see chrono_split_ecu/src/ecu_node.cpp's header
 // comment for the overall split-architecture picture and why logic is
 // deliberately deferred to a later step). This is the FMU-wrapped
 // dynamics node: subscribes VehicleCommand (from the ECU node, Bridge 2),
@@ -22,16 +22,16 @@
 // VehicleCommand arrives.
 #include <rclcpp/rclcpp.hpp>
 
-#include "chrono_vehicle_msgs/msg/vehicle_command.hpp"
-#include "chrono_vehicle_msgs/msg/vehicle_status.hpp"
+#include "chrono_split_msgs/msg/vehicle_command.hpp"
+#include "chrono_split_msgs/msg/vehicle_status.hpp"
 
-using chrono_vehicle_msgs::msg::VehicleCommand;
-using chrono_vehicle_msgs::msg::VehicleStatus;
+using chrono_split_msgs::msg::VehicleCommand;
+using chrono_split_msgs::msg::VehicleStatus;
 
-class ChronoVehicleDynamicsNode : public rclcpp::Node
+class ChronoSplitDynamicsNode : public rclcpp::Node
 {
 public:
-  ChronoVehicleDynamicsNode() : Node("chrono_vehicle_dynamics_node")
+  ChronoSplitDynamicsNode() : Node("chrono_split_dynamics_node")
   {
     vehicle_command_sub_ = create_subscription<VehicleCommand>(
       "vehicle_command", rclcpp::SystemDefaultsQoS(),
@@ -40,9 +40,9 @@ public:
       create_publisher<VehicleStatus>("vehicle_status", rclcpp::SystemDefaultsQoS());
 
     // 500 Hz -- matches native_vehicle_fmu/modelDescription.xml's
-    // DefaultExperiment stepSize (0.002s), same as chrono_vehicle_ecu.
+    // DefaultExperiment stepSize (0.002s), same as chrono_split_ecu.
     timer_ = create_wall_timer(
-      std::chrono::milliseconds(2), std::bind(&ChronoVehicleDynamicsNode::tick, this));
+      std::chrono::milliseconds(2), std::bind(&ChronoSplitDynamicsNode::tick, this));
   }
 
 private:
@@ -69,7 +69,7 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ChronoVehicleDynamicsNode>());
+  rclcpp::spin(std::make_shared<ChronoSplitDynamicsNode>());
   rclcpp::shutdown();
   return 0;
 }
