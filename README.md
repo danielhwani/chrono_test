@@ -997,6 +997,22 @@ ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_con
 
 **처리 방향 (사용자 결정)**: 코드/튜닝값은 건드리지 않고 이 특성만 기록해두기로 함 — `kVelocityKp`/`kMaxDriveTorqueRear`는 원래 2WD 기준으로 경험적으로 튜닝된 값이고 4WD 때도 그대로 재사용했던 전례가 있어서, 6x6 전용으로 올리려면 별도의 실제 타당성 검증(바퀴 슬립 재발 여부 등)이 먼저 필요함 — 지금 스코프 밖.
 
+### RViz 시각화 — 바퀴가 안 보이던 문제, 그리고 재질 렌더링 함정
+
+6x6을 RViz로 처음 열어봤을 때(`rviz2 -d chrono_vehicle.rviz`, 실제 `controller_manager`가 이미 돌아가는 상태에서) 섀시는 보이는데 **바퀴 6개가 전부 "No transform from [wheel] to [base_link]"** 에러로 안 보였음. `check_urdf`로는 운동학적 트리가 완전히 정상(`base_link`의 6개 자식까지 다 파싱됨)이라 URDF 구조 문제가 아니었고, `<ros2_control>` 쪽 원인으로 좁혀짐: 바퀴 조인트는 (FMU가 바퀴 회전각을 추적 안 해서) `<state_interface name="velocity"/>`만 선언돼 있었는데, `robot_state_publisher`는 continuous 조인트라도 TF 계산에 숫자 **position**이 필요함 — 그래서 `/joint_states`의 position이 6개 바퀴 전부 `.nan`이었고 TF를 못 만든 것. 조향 조인트는 position을 실제로 가지고 있어서 정상 렌더링됐음. **지금까지 한 번도 실제 FMU 구동 로봇을 RViz로 본 적이 없어서**(이전 검증은 전부 `joint_state_publisher_gui`의 가짜 슬라이더로 했음, 항상 position을 채워줌) 처음 드러난 갭 — 6x6 전용 문제가 아니라 4WD 때부터 있던 문제였음.
+
+**고친 방법**: `JointIO`에 `dead_reckoned_position`(visualization-only, `position += velocity * period.seconds()`로 매 `read()`마다 누적, 제어 로직에는 절대 안 쓰임)을 추가하고, velocity 인터페이스인 조인트는 `export_state_interfaces()`에서 velocity와 함께 position도 같이 export하도록 함(`ChronoFmuSystemInterface`와 `ChronoEcuBridgeSystemInterface` 둘 다 동일하게 — 스플릿의 브릿지는 FMU 접근이 없어서 `EcuStatus`로 받은 속도값만으로 자체 적분). URDF 4개 전부 바퀴 조인트에 `<state_interface name="position"/>` 추가. `on_init()`의 조인트 검증 로직도 손봄 — 이전엔 "state_interface 정확히 1개"를 강제했는데, "position 조인트는 1개, velocity 조인트는 velocity+position 정확히 2개"로 재작성(URDF 선언 개수와 실제 export 개수가 항상 일치해야 `resource_manager`가 안 튕기므로).
+
+**두 번째 함정 — 원통은 회전축 대칭이라 회전이 안 보임**: 바퀴가 `<cylinder>` 원통이라, position을 아무리 정확히 적분해도 육안으로는 회전이 안 보임(회전축 대칭이라 어느 각도든 렌더링이 똑같음). 바퀴 옆면에 작은 비대칭 스트라이프(`<box>`)를 추가해서 실제로 스윕하는 게 보이도록 함.
+
+**세 번째 함정 — RViz가 한 링크의 두 번째 `<visual>` 재질을 제대로 안 잡음**: 처음엔 스트라이프를 바퀴 링크 안의 **두 번째 `<visual>`**로 넣었는데(재질만 다르게, `wheel_marker`), 실터미널에서 확대해보니 회전은 정확히 되는데 색이 은색이 아니라 **검은색**(`wheel_dark`, 원통과 같은 색)으로 렌더링됨 — RViz/Ogre가 한 링크에 여러 `<visual>`이 있을 때 첫 번째 visual의 재질만 링크 전체에 적용하는 것으로 보임(URDF 자체는 문제 없음, 재질 이름/참조 다 정상이었음). **해결**: 스트라이프를 별도 링크(`{wheel}_marker`)로 분리하고 `fixed` 조인트로 바퀴에 고정 — `fixed` 조인트는 `<ros2_control>`에 아무것도 선언 안 해도 되고 정적 TF로 자동 퍼블리시되니 코드 변경 없이 URDF만으로 해결됨.
+
+**색상도 함께 리프레시**: `wheel_dark`(거의 검정, `0.1/0.1/0.1`)는 실제로 문제 없었지만(사용자가 처음 본 흰색은 트랜스폼 에러 아티팩트였음), 요청대로 살짝 더 다듬음 — `chassis_red`를 진한 크림슨(`0.72/0.08/0.12`)으로, `wheel_dark`를 그래파이트(`0.13/0.13/0.15`)로, 새 `wheel_marker`는 은색(`0.85/0.85/0.9`)으로.
+
+**네 번째 함정 — 바퀴는 다 돌아가는데 차체가 제자리**: 위 3가지를 다 고치고 나니 바퀴는 정상 회전하는데 **차체 자체가 화면에서 안 움직임** — 사용자가 직접 지적("차량은 제자리에 있고 바퀴만 돌아서 현실성이 없어"). 원인은 RViz 설정이지 코드가 아니었음: 저장된 `chrono_vehicle.rviz`의 Fixed Frame이 `base_link`로 돼 있어서(base_link 자체가 화면 기준점이라 정의상 못 움직임). `odom`으로 바꿔보라고 안내했더니 "odom tf는 존재하지 않는데?" — 실제로 `/tf`를 5초간 스트리밍해봐도 `odom` 프레임이 단 한 번도 안 나타남. `ackermann_steering_controller`(`steering_controllers_library` 베이스)의 `enable_odom_tf` 기본값은 `true`인 걸 헤더에서 확인했고, 실제로 `ros2 param get /ackermann_steering_controller enable_odom_tf`도 `True`, `/ackermann_steering_controller/odometry`·`/ackermann_steering_controller/tf_odometry` 토픽 둘 다 500Hz로 정상 발행 중이었고 `odom→base_link` 변환값(`x=21.17m`, 실제로 차가 많이 이동한 값)도 정확했음 — **진짜 원인은 컨트롤러가 이 변환을 `/tf`가 아니라 자기 전용 네임스페이스 토픽(`~/tf_odometry`)에만 발행**하고 있었던 것. RViz는 `/tf`/`/tf_static`만 구독하므로 절대 못 봄. `spawner`엔 컨트롤러별 리매핑 옵션이 없어서(Humble 기준 `--help` 확인), 컨트롤러가 실제로 돌아가는 `ros2_control_node` 자체의 `remappings`에 `("/ackermann_steering_controller/tf_odometry", "/tf")`를 추가(두 launch 파일 다, 메시지 타입이 둘 다 `tf2_msgs/TFMessage`라 타입 불일치 없음). 재실행 후 Fixed Frame을 `odom`으로 바꾸니 차체가 실제로 앞으로 나가는 게 확인됨("잘 움직이네").
+
+**검증**: `chrono_fmu_system_interface_check`로 회귀 확인 — 4륜/6x6 둘 다 velocity 수치 기존과 bit-exact 동일(`3.637180`/`2.709956`), 새 `position` 필드도 정상 누적(`19.467563`/`13.444388`, 6초간). 실터미널(사용자 본인 RViz)에서 인프로세스/스플릿 6x6 둘 다 최종 확인: 바퀴 6개 전부 트랜스폼 에러 없이 렌더링, 은색 스트라이프가 실제로 회전, Fixed Frame을 `odom`으로 바꾸면 차체도 실제로 이동 — 두 트랙 다 "잘 움직이네" 확인.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

@@ -21,25 +21,56 @@ hardware_interface::CallbackReturn ChronoEcuBridgeSystemInterface::on_init(
   // unchanged here too.
   joints_.reserve(info_.joints.size());
   for (const auto & joint : info_.joints) {
-    // Exactly one state_interface always; command_interface is now
-    // OPTIONAL (0 or 1) -- the 4WD front wheel spin joints are
-    // state-only, see JointIO::has_command's comment.
-    if (joint.command_interfaces.size() > 1 || joint.state_interfaces.size() != 1) {
+    auto logger = rclcpp::get_logger("ChronoEcuBridgeSystemInterface");
+    if (joint.command_interfaces.size() > 1) {
       RCLCPP_ERROR(
-        rclcpp::get_logger("ChronoEcuBridgeSystemInterface"),
-        "joint '%s' must declare at most one command_interface and exactly one state_interface",
-        joint.name.c_str());
+        logger, "joint '%s' must declare at most one command_interface", joint.name.c_str());
       return hardware_interface::CallbackReturn::ERROR;
     }
     const bool has_command = !joint.command_interfaces.empty();
-    const std::string & iface =
-      has_command ? joint.command_interfaces[0].name : joint.state_interfaces[0].name;
+    // Primary interface: from the command_interface if the joint has one,
+    // otherwise it must be velocity (state-only joints are only ever wheel
+    // joints -- see has_command's comment). Same logic as
+    // ChronoFmuSystemInterface's identical block.
+    const std::string iface =
+      has_command ? joint.command_interfaces[0].name : hardware_interface::HW_IF_VELOCITY;
     if (iface != hardware_interface::HW_IF_POSITION && iface != hardware_interface::HW_IF_VELOCITY) {
       RCLCPP_ERROR(
-        rclcpp::get_logger("ChronoEcuBridgeSystemInterface"),
-        "joint '%s' has unsupported interface '%s' (only position/velocity wired so far)",
+        logger, "joint '%s' has unsupported interface '%s' (only position/velocity wired so far)",
         joint.name.c_str(), iface.c_str());
       return hardware_interface::CallbackReturn::ERROR;
+    }
+    // Steering (position) joints track exactly one real state (position).
+    // Wheel (velocity) joints must declare EXACTLY 2 state_interfaces
+    // (velocity, position) -- export_state_interfaces() unconditionally
+    // exports both for every velocity-interface joint (the "position" one
+    // is a dead-reckoned value purely for RViz, see
+    // JointIO::dead_reckoned_position), and resource_manager requires the
+    // declared count to match what's actually exported.
+    if (iface == hardware_interface::HW_IF_POSITION) {
+      if (
+        joint.state_interfaces.size() != 1 ||
+        joint.state_interfaces[0].name != hardware_interface::HW_IF_POSITION) {
+        RCLCPP_ERROR(
+          logger, "joint '%s' must declare exactly one position state_interface",
+          joint.name.c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+    } else {
+      bool found_velocity = false;
+      bool found_position = false;
+      for (const auto & si : joint.state_interfaces) {
+        found_velocity |= (si.name == hardware_interface::HW_IF_VELOCITY);
+        found_position |= (si.name == hardware_interface::HW_IF_POSITION);
+      }
+      if (joint.state_interfaces.size() != 2 || !found_velocity || !found_position) {
+        RCLCPP_ERROR(
+          logger,
+          "joint '%s' must declare exactly velocity + position state_interfaces (position is "
+          "dead-reckoned, for RViz)",
+          joint.name.c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
     }
     joints_.push_back(JointIO{joint.name, iface, 0.0, 0.0, has_command});
   }
@@ -65,9 +96,14 @@ std::vector<hardware_interface::StateInterface>
 ChronoEcuBridgeSystemInterface::export_state_interfaces()
 {
   std::vector<hardware_interface::StateInterface> interfaces;
-  interfaces.reserve(joints_.size());
+  interfaces.reserve(joints_.size() * 2);
   for (auto & joint : joints_) {
     interfaces.emplace_back(joint.name, joint.interface, &joint.state);
+    if (joint.interface == hardware_interface::HW_IF_VELOCITY) {
+      // Dead-reckoned position, purely for RViz -- see JointIO's comment.
+      interfaces.emplace_back(
+        joint.name, hardware_interface::HW_IF_POSITION, &joint.dead_reckoned_position);
+    }
   }
   return interfaces;
 }
@@ -87,7 +123,7 @@ ChronoEcuBridgeSystemInterface::export_command_interfaces()
 }
 
 hardware_interface::return_type ChronoEcuBridgeSystemInterface::read(
-  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 {
   EcuStatus status;
   {
@@ -100,6 +136,8 @@ hardware_interface::return_type ChronoEcuBridgeSystemInterface::read(
       joint.state = is_left ? status.steer_fl_rad : status.steer_fr_rad;
     } else {
       joint.state = status.traction_vel_rad_s;
+      // Dead-reckoned, visualization-only -- see JointIO's comment.
+      joint.dead_reckoned_position += joint.state * period.seconds();
     }
   }
   return hardware_interface::return_type::OK;

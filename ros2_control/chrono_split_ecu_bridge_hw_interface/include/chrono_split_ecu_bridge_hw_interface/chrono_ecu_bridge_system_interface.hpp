@@ -69,6 +69,13 @@ private:
     // write()'s command-averaging must not include them either -- same
     // reasoning as ChronoFmuSystemInterface's identical field.
     bool has_command = true;
+    // Dead-reckoned position for velocity-only (wheel) joints, purely for
+    // RViz -- same reasoning/mechanism as ChronoFmuSystemInterface's
+    // identical field (see that header's comment for the full story). This
+    // bridge has no FMU access, so it integrates locally from whatever
+    // traction_vel_rad_s arrives via EcuStatus rather than anything
+    // FMU-side; that's fine since it's purely cosmetic.
+    double dead_reckoned_position = 0.0;
   };
   std::vector<JointIO> joints_;
 

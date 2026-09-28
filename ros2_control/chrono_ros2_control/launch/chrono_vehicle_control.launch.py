@@ -74,7 +74,18 @@ def launch_setup(context, *args, **kwargs):
         executable="ros2_control_node",
         parameters=[robot_description, controllers_yaml],
         output="both",
-        remappings=[("~/robot_description", "/robot_description")],
+        remappings=[
+            ("~/robot_description", "/robot_description"),
+            # ackermann_steering_controller publishes its odom->base_link
+            # transform to its own private "tf_odometry" topic (confirmed
+            # live: enable_odom_tf defaults to true, the transform itself
+            # was correct, but RViz never saw the car move because it only
+            # ever listens on /tf, not a controller-private topic) --
+            # remap it onto /tf so RViz/tf2 actually pick it up. spawner has
+            # no per-controller remap flag in Humble, so this has to live on
+            # the node that actually hosts the controller.
+            ("/ackermann_steering_controller/tf_odometry", "/tf"),
+        ],
     )
     robot_state_pub_node = Node(
         package="robot_state_publisher",

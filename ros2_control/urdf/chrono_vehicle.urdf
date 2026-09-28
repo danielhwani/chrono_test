@@ -39,10 +39,19 @@
   -->
 
   <material name="chassis_red">
-    <color rgba="0.75 0.1 0.1 1.0"/>
+    <color rgba="0.72 0.08 0.12 1.0"/>
   </material>
   <material name="wheel_dark">
-    <color rgba="0.1 0.1 0.1 1.0"/>
+    <color rgba="0.13 0.13 0.15 1.0"/>
+  </material>
+  <!-- Small radial stripe on each wheel's rolling-surface plane, purely so
+       rotation is actually visible in RViz — a plain <cylinder> is
+       rotationally symmetric about its own spin axis, so without an
+       off-axis marker like this one, dead-reckoned wheel spin (see
+       ChronoFmuSystemInterface's JointIO::dead_reckoned_position) updates
+       the TF correctly but looks perfectly static. -->
+  <material name="wheel_marker">
+    <color rgba="0.85 0.85 0.9 1.0"/>
   </material>
 
   <!-- Chassis box: CHASSIS_DIMS=(2.6, 1.6, 0.4) from simple_vehicle.py, at
@@ -171,6 +180,75 @@
     <axis xyz="0 1 0"/>
   </joint>
 
+
+  <!-- Separate link + fixed joint per wheel for the rotation-
+       visibility marker (see wheel_marker material comment above) —
+       NOT a second <visual> inside the wheel link itself: RViz/Ogre
+       was observed to only honor the FIRST visual's material for a
+       link with multiple <visual> elements (marker rendered solid
+       black, matching wheel_dark, instead of wheel_marker's silver —
+       confirmed live, rotation itself was already correct). A
+       separate link with its own single <visual> sidesteps that
+       entirely; fixed joints need no ros2_control entry and are
+       published as static TF automatically. -->
+  <link name="front_left_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="front_right_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="rear_left_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="rear_right_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+
+  <joint name="front_left_wheel_marker_joint" type="fixed">
+    <parent link="front_left_wheel"/>
+    <child link="front_left_wheel_marker"/>
+    <origin xyz="0.15 0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="front_right_wheel_marker_joint" type="fixed">
+    <parent link="front_right_wheel"/>
+    <child link="front_right_wheel_marker"/>
+    <origin xyz="0.15 -0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="rear_left_wheel_marker_joint" type="fixed">
+    <parent link="rear_left_wheel"/>
+    <child link="rear_left_wheel_marker"/>
+    <origin xyz="0.15 0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="rear_right_wheel_marker_joint" type="fixed">
+    <parent link="rear_right_wheel"/>
+    <child link="rear_right_wheel_marker"/>
+    <origin xyz="0.15 -0.115 0" rpy="0 0 0"/>
+  </joint>
+
   <ros2_control name="ChronoVehicleSystem" type="system">
     <hardware>
       <!-- Not yet built (step 4) — this names the plugin that step 4 will
@@ -190,22 +268,35 @@
       <command_interface name="position"/>
       <state_interface name="position"/>
     </joint>
+    <!-- position state_interface on every wheel joint below is a
+         dead-reckoned, visualization-only value (see
+         ChronoFmuSystemInterface's JointIO::dead_reckoned_position) —
+         needed because robot_state_publisher requires a numeric position
+         for every non-fixed joint to compute its link's TF, even a
+         continuous one; without it these wheels reported NaN position and
+         never rendered in RViz ("No transform from [wheel] to
+         [base_link]"). Not a real measured position — the FMU has no
+         per-wheel angle output — never read by anything control-side. -->
     <joint name="rear_left_wheel_joint">
       <command_interface name="velocity"/>
       <state_interface name="velocity"/>
+      <state_interface name="position"/>
     </joint>
     <joint name="rear_right_wheel_joint">
       <command_interface name="velocity"/>
       <state_interface name="velocity"/>
+      <state_interface name="position"/>
     </joint>
     <!-- 4WD front spin: state-only, no command_interface — see the
          matching joint comment above for why nothing should ever command
          this. -->
     <joint name="front_left_wheel_joint">
       <state_interface name="velocity"/>
+      <state_interface name="position"/>
     </joint>
     <joint name="front_right_wheel_joint">
       <state_interface name="velocity"/>
+      <state_interface name="position"/>
     </joint>
   </ros2_control>
 

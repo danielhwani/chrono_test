@@ -104,6 +104,19 @@ private:
     // entirely, and write()'s command-averaging loop must not include
     // them (their .command stays a meaningless default 0.0 forever).
     bool has_command = true;
+    // Dead-reckoned position for velocity-only (wheel) joints, purely for
+    // RViz visualization -- integrated from the state velocity each read()
+    // (position += velocity * period.seconds()), exported as an ADDITIONAL
+    // state_interface alongside the real velocity one. Never fed back into
+    // any control decision (ackermann_steering_controller never reads wheel
+    // position). Added because robot_state_publisher needs a numeric
+    // position for every non-fixed joint to compute its link's TF, even a
+    // continuous one -- without this, wheel joints (velocity-state-only by
+    // design, see has_command's comment) reported NaN position, and
+    // robot_state_publisher couldn't place the wheel links at all ("No
+    // transform from [wheel] to [base_link]" in RViz, found live when the
+    // 6x6 build was first opened in RViz).
+    double dead_reckoned_position = 0.0;
   };
   std::vector<JointIO> joints_;
 

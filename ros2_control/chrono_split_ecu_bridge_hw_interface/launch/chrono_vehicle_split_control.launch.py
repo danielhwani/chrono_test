@@ -68,7 +68,14 @@ def launch_setup(context, *args, **kwargs):
         executable="ros2_control_node",
         parameters=[robot_description, controllers_yaml],
         output="both",
-        remappings=[("~/robot_description", "/robot_description")],
+        remappings=[
+            ("~/robot_description", "/robot_description"),
+            # See chrono_ros2_control's matching launch file comment --
+            # ackermann_steering_controller's odom->base_link transform goes
+            # to a private "tf_odometry" topic by default, invisible to
+            # RViz's own /tf subscription unless remapped.
+            ("/ackermann_steering_controller/tf_odometry", "/tf"),
+        ],
     )
     robot_state_pub_node = Node(
         package="robot_state_publisher",
