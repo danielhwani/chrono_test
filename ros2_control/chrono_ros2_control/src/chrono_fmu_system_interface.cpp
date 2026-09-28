@@ -40,6 +40,12 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
   }
   const std::string fmu_dir = it->second;
 
+  // Optional -- absent (as in chrono_vehicle.urdf) means false, preserving
+  // every existing 4-wheel/2-axle behavior exactly. "true" (as in
+  // chrono_vehicle_6x6.urdf) turns on the mid axle.
+  auto six_wheel_it = info_.hardware_parameters.find("six_wheel");
+  six_wheel_ = (six_wheel_it != info_.hardware_parameters.end() && six_wheel_it->second == "true");
+
   // fmu_client_open_begin()/_finish() (not the single-call fmu_client_open())
   // because four_wheel_drive is a genuinely structural FMU parameter --
   // native_vehicle_fmu reads it exactly once, inside its own
@@ -59,6 +65,8 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
   ok &= find_vr_or_fail(fmu_, "drive_torque_rear", &vr_drive_torque_rear_);
   ok &= find_vr_or_fail(fmu_, "drive_torque_front", &vr_drive_torque_front_);
   ok &= find_vr_or_fail(fmu_, "four_wheel_drive", &vr_four_wheel_drive_);
+  ok &= find_vr_or_fail(fmu_, "drive_torque_mid", &vr_drive_torque_mid_);
+  ok &= find_vr_or_fail(fmu_, "six_wheel", &vr_six_wheel_);
   ok &= find_vr_or_fail(fmu_, "steer_FL_deg", &vr_steer_fl_deg_);
   ok &= find_vr_or_fail(fmu_, "steer_FR_deg", &vr_steer_fr_deg_);
   ok &= find_vr_or_fail(fmu_, "speed_mps", &vr_speed_mps_);
@@ -69,16 +77,20 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  // Both flags set here, still in initialization mode -- four_wheel_drive
-  // MUST be set before open_finish() (see above); independent_front_steer
-  // doesn't strictly need to be (it's checked every step(), not
-  // build-time), but setting it in the same place is simpler than
-  // splitting the two into "before finish" and "after finish" calls for no
-  // real benefit.
-  FmuValueReference vr_flags[2] = {vr_independent_front_steer_, vr_four_wheel_drive_};
-  double ones[2] = {1.0, 1.0};
-  if (!fmu_client_set_real(fmu_, vr_flags, 2, ones)) {
-    RCLCPP_ERROR(logger(), "fmu_client_set_real(independent_front_steer, four_wheel_drive) failed");
+  // Flags set here, still in initialization mode -- four_wheel_drive and
+  // six_wheel MUST be set before open_finish() (both structural, see
+  // above); independent_front_steer doesn't strictly need to be (it's
+  // checked every step(), not build-time), but setting it in the same
+  // place is simpler than splitting into "before finish"/"after finish"
+  // calls for no real benefit. six_wheel only sent as 1.0 when the URDF's
+  // six_wheel param asked for it -- otherwise left at the FMU's own
+  // default (0.0), matching four_wheel_drive's now-established pattern.
+  FmuValueReference vr_flags[3] = {
+    vr_independent_front_steer_, vr_four_wheel_drive_, vr_six_wheel_};
+  double flag_values[3] = {1.0, 1.0, six_wheel_ ? 1.0 : 0.0};
+  if (!fmu_client_set_real(fmu_, vr_flags, 3, flag_values)) {
+    RCLCPP_ERROR(
+      logger(), "fmu_client_set_real(independent_front_steer, four_wheel_drive, six_wheel) failed");
     return hardware_interface::CallbackReturn::ERROR;
   }
 
@@ -246,17 +258,24 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
   // (transfer case), it doesn't duplicate it -- dividing here instead of
   // duplicating keeps the total commanded tractive effort, and therefore
   // the closed loop's effective gain, identical to the already-validated
-  // 2WD case regardless of how many axles are actually driven.
-  const double drive_torque = total_drive_torque / 2.0;
+  // 2WD case regardless of how many axles are actually driven. 6x6 divides
+  // by 3 instead of 2 for exactly the same reason -- num_driven_axles_
+  // must track how many axles are actually driven, not a hardcoded /2.0.
+  const double num_driven_axles = six_wheel_ ? 3.0 : 2.0;
+  const double drive_torque = total_drive_torque / num_driven_axles;
 
   // apply_differential() still separately handles L/R split on each axle;
-  // this plugin only ever talks in axle-level quantities.
-  FmuValueReference vrs[4] = {
-    vr_steer_fl_deg_in_, vr_steer_fr_deg_in_, vr_drive_torque_rear_, vr_drive_torque_front_};
-  double values[4] = {steer_fl_deg, steer_fr_deg, drive_torque, drive_torque};
-  if (!fmu_client_set_real(fmu_, vrs, 4, values)) {
+  // this plugin only ever talks in axle-level quantities. drive_torque_mid
+  // only sent (nonzero) when six_wheel_ -- otherwise the FMU has no mid
+  // axle at all and simply ignores whatever value sits in that input.
+  FmuValueReference vrs[5] = {
+    vr_steer_fl_deg_in_, vr_steer_fr_deg_in_, vr_drive_torque_rear_, vr_drive_torque_front_,
+    vr_drive_torque_mid_};
+  double values[5] = {
+    steer_fl_deg, steer_fr_deg, drive_torque, drive_torque, six_wheel_ ? drive_torque : 0.0};
+  if (!fmu_client_set_real(fmu_, vrs, 5, values)) {
     RCLCPP_ERROR(
-      logger(), "fmu_client_set_real(steer_fl/fr_deg_in, drive_torque_rear/front) failed");
+      logger(), "fmu_client_set_real(steer_fl/fr_deg_in, drive_torque_rear/front/mid) failed");
     return hardware_interface::return_type::ERROR;
   }
 

@@ -35,8 +35,14 @@
 //     in-process and split versions (not a split-architecture-specific
 //     bug). A real 4WD driveline splits a torque demand across axles
 //     (transfer case), it doesn't duplicate it.
-//   - drive_torque_mid_nm stays 0.0 -- six_wheel fan-out is a deliberately
-//     separate, later extension (not yet done on either version)
+//   - six_wheel: an optional ROS2 node parameter (default false, launch
+//     argument -- see the split launch file), matching
+//     chrono_ros2_control's URDF <param name="six_wheel"> in spirit (this
+//     node has no URDF hardware_parameters to read since it's a plain ROS2
+//     node, not a hardware_interface component). When true, the SAME
+//     computed torque also goes to drive_torque_mid_nm, and the total is
+//     divided by 3 axles instead of 2 -- same divide-not-duplicate
+//     reasoning as 4WD above.
 #include <cmath>
 
 #include <rclcpp/rclcpp.hpp>
@@ -70,6 +76,8 @@ class ChronoSplitEcuNode : public rclcpp::Node
 public:
   ChronoSplitEcuNode() : Node("chrono_split_ecu")
   {
+    six_wheel_ = declare_parameter<bool>("six_wheel", false);
+
     ecu_command_sub_ = create_subscription<EcuCommand>(
       "ecu_command", rclcpp::SystemDefaultsQoS(),
       [this](const EcuCommand::SharedPtr msg) { latest_ecu_command_ = *msg; });
@@ -112,14 +120,17 @@ private:
     } else if (total_drive_torque < -kMaxDriveTorqueRear) {
       total_drive_torque = -kMaxDriveTorqueRear;
     }
-    // 4WD: divided (not duplicated) across both axles -- see file header.
-    const double drive_torque = total_drive_torque / 2.0;
+    // 4WD/6x6: divided (not duplicated) across driven axles -- see file
+    // header. num_driven_axles matches chrono_fmu_system_interface's own
+    // six_wheel_ ? 3.0 : 2.0.
+    const double num_driven_axles = six_wheel_ ? 3.0 : 2.0;
+    const double drive_torque = total_drive_torque / num_driven_axles;
 
     VehicleCommand vc;
     vc.steer_fl_deg = steer_fl_deg;
     vc.steer_fr_deg = steer_fr_deg;
     vc.drive_torque_front_nm = drive_torque;
-    vc.drive_torque_mid_nm = 0.0;
+    vc.drive_torque_mid_nm = six_wheel_ ? drive_torque : 0.0;
     vc.drive_torque_rear_nm = drive_torque;
     vehicle_command_pub_->publish(vc);
 
@@ -138,6 +149,7 @@ private:
 
   EcuCommand latest_ecu_command_;
   VehicleStatus latest_vehicle_status_;
+  bool six_wheel_ = false;
 };
 
 int main(int argc, char ** argv)

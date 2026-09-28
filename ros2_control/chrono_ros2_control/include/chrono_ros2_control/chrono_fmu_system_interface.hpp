@@ -38,7 +38,20 @@
 // ackermann_steering_controller never gave a separate front-traction
 // command in the first place. apply_differential() still separately owns
 // L/R split on each axle; this plugin still only ever talks in axle-level
-// quantities, now two axles instead of one.
+// quantities, now two axles instead of one. IMPORTANT: the torque is
+// DIVIDED across driven axles, not duplicated onto each -- a first attempt
+// duplicated it, which doubles the effective torque-per-unit-error a
+// 2-axle vehicle experiences vs. the 1-axle case kVelocityKp/kVelocityDeadband
+// were tuned against, and reproduced (far worse) the exact step-7
+// noise-resonance runaway from a standstill. A real 4WD driveline's
+// transfer case splits a torque demand across axles, it doesn't clone it.
+//
+// 6x6 (same session): an OPTIONAL <param name="six_wheel">true</param>
+// (absent/false by default -- every existing 4-wheel/2-axle behavior stays
+// bit-exact) turns on native_vehicle_fmu's six_wheel structural flag and
+// makes write() fan the P-loop's torque across 3 axles (divide by
+// num_driven_axles_, not a hardcoded /2.0) instead of 2. See
+// chrono_vehicle_6x6.urdf for the sibling URDF this is meant to pair with.
 #ifndef CHRONO_ROS2_CONTROL__CHRONO_FMU_SYSTEM_INTERFACE_HPP_
 #define CHRONO_ROS2_CONTROL__CHRONO_FMU_SYSTEM_INTERFACE_HPP_
 
@@ -102,12 +115,19 @@ private:
   FmuValueReference vr_drive_torque_rear_{};
   FmuValueReference vr_drive_torque_front_{};       // input: 4WD fan-out target (see write())
   FmuValueReference vr_four_wheel_drive_{};         // input: set to 1.0 once, in on_init()
+  FmuValueReference vr_drive_torque_mid_{};         // input: 6x6 fan-out target (see write())
+  FmuValueReference vr_six_wheel_{};                // input: set to 1.0 once IFF six_wheel_ (see on_init())
   FmuValueReference vr_steer_fl_deg_{};   // output: steer_FL_deg (actual, read back)
   FmuValueReference vr_steer_fr_deg_{};   // output: steer_FR_deg (actual, read back)
   FmuValueReference vr_speed_mps_{};
   FmuValueReference vr_independent_front_steer_{};  // input: set to 1.0 once, in on_init()
   FmuValueReference vr_steer_fl_deg_in_{};          // input: FL commanded angle
   FmuValueReference vr_steer_fr_deg_in_{};          // input: FR commanded angle
+
+  // Read once from the URDF's optional <param name="six_wheel">, in
+  // on_init() -- absent/anything-but-"true" means false, preserving every
+  // existing 4-wheel/2-axle behavior exactly (see header comment).
+  bool six_wheel_ = false;
 
   double sim_time_ = 0.0;
   // Matches native_vehicle_fmu/modelDescription.xml's DefaultExperiment

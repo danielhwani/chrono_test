@@ -25,34 +25,54 @@ No RViz here on purpose -- this launch file's job is controller_manager
 wanted (don't run both robot_state_publisher instances against the same
 URDF at once, though -- pick one).
 
+`six_wheel` launch argument (default "false", same session as the 6x6
+upgrade): when "true", loads chrono_vehicle_6x6.urdf instead of
+chrono_vehicle.urdf -- that URDF's own <param name="six_wheel">true</param>
+is what actually drives ChronoFmuSystemInterface's six_wheel behavior; this
+argument only picks which URDF file to load. It ALSO switches the
+controller_manager YAML to chrono_vehicle_controllers_6x6.yaml, which
+differs from the 4-wheel YAML only in `wheelbase` (3.4 vs 2.6) --
+ackermann_steering_controller uses that value directly in its Ackermann
+steering-angle/odometry math, so reusing the 4-wheel YAML against the 6x6
+URDF's real 3.4m wheelbase would silently command wrong steering angles.
+Uses an OpaqueFunction because both paths depend on a launch argument's
+runtime value, which plain module-level Python can't see.
+
 Run:
     cd ros2_control && colcon build --packages-select chrono_ros2_control  # step 5
     source /opt/ros/humble/setup.bash && source install/setup.bash
     ros2 launch chrono_ros2_control/launch/chrono_vehicle_control.launch.py
+    ros2 launch chrono_ros2_control/launch/chrono_vehicle_control.launch.py six_wheel:=true
 """
 import os
 
 from launch import LaunchDescription
-from launch.actions import RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
-from launch.substitutions import Command
+from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-URDF_PATH = os.path.join(HERE, "..", "..", "urdf", "chrono_vehicle.urdf")
-CONTROLLERS_YAML = os.path.join(HERE, "..", "config", "chrono_vehicle_controllers.yaml")
+CONFIG_DIR = os.path.join(HERE, "..", "config")
 
 
-def generate_launch_description():
+def launch_setup(context, *args, **kwargs):
+    six_wheel = LaunchConfiguration("six_wheel").perform(context) == "true"
+    urdf_name = "chrono_vehicle_6x6.urdf" if six_wheel else "chrono_vehicle.urdf"
+    urdf_path = os.path.join(HERE, "..", "..", "urdf", urdf_name)
     robot_description = {
-        "robot_description": ParameterValue(Command(["cat ", URDF_PATH]), value_type=str)
+        "robot_description": ParameterValue(Command(["cat ", urdf_path]), value_type=str)
     }
+    controllers_yaml_name = (
+        "chrono_vehicle_controllers_6x6.yaml" if six_wheel else "chrono_vehicle_controllers.yaml"
+    )
+    controllers_yaml = os.path.join(CONFIG_DIR, controllers_yaml_name)
 
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        parameters=[robot_description, CONTROLLERS_YAML],
+        parameters=[robot_description, controllers_yaml],
         output="both",
         remappings=[("~/robot_description", "/robot_description")],
     )
@@ -80,9 +100,20 @@ def generate_launch_description():
         )
     )
 
-    return LaunchDescription([
+    return [
         control_node,
         robot_state_pub_node,
         joint_state_broadcaster_spawner,
         delay_ackermann_after_joint_state_broadcaster,
+    ]
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            "six_wheel",
+            default_value="false",
+            description="Use chrono_vehicle_6x6.urdf instead of chrono_vehicle.urdf",
+        ),
+        OpaqueFunction(function=launch_setup),
     ])

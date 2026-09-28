@@ -1,0 +1,44 @@
+# 6x6 sibling of chrono_vehicle_controllers.yaml (same session as the 6x6
+# upgrade). Identical except `wheelbase`, which ackermann_steering_controller
+# uses directly in its Ackermann steering-angle and odometry math -- reusing
+# the 4-wheel YAML's wheelbase: 2.6 against the 6x6 URDF's real 3.4m
+# front-to-rear span (see chrono_vehicle_6x6.urdf / vehicle_native.cpp's
+# WHEELBASE_6W) would silently command geometrically wrong steering angles,
+# not crash -- worth its own file rather than a runtime override.
+#
+# front_wheel_track/rear_wheel_track/front_wheels_radius/rear_wheels_radius
+# stay 1.5/1.5/0.32/0.32 -- TRACK and WHEEL_RADIUS are unchanged between the
+# 4-wheel and 6x6 layouts (see vehicle_native.cpp). mid axle has no
+# corresponding ackermann_steering_controller parameter (it isn't a
+# front/rear wheel in that controller's model at all -- its velocity is
+# state-only, driven internally by the plugin/ECU, same as the front wheels
+# in the 4WD case).
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz
+    lock_memory: false
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    ackermann_steering_controller:
+      type: ackermann_steering_controller/AckermannSteeringController
+
+ackermann_steering_controller:
+  ros__parameters:
+    front_steering: true
+    front_wheels_names: ["front_left_steering_joint", "front_right_steering_joint"]
+    rear_wheels_names: ["rear_left_wheel_joint", "rear_right_wheel_joint"]
+
+    # matches WHEELBASE_6W/TRACK/WHEEL_RADIUS in
+    # fmu/cpp/native_vehicle_fmu/sources/vehicle_native.cpp -- not arbitrary
+    # values. WHEELBASE_6W=3.4 (front +1.7, rear -1.7) vs the 4-wheel case's
+    # 2.6 -- everything else is unchanged between layouts.
+    wheelbase: 3.4
+    front_wheel_track: 1.5
+    rear_wheel_track: 1.5
+    front_wheels_radius: 0.32
+    rear_wheels_radius: 0.32
+
+    base_frame_id: base_link
+    odom_frame_id: odom

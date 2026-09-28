@@ -27,6 +27,13 @@
 // fmu_dir is a ROS2 node parameter (not a URDF hardware_parameter, since
 // this isn't a hardware_interface component) -- set via
 // --ros-args -p fmu_dir:=<path> or a launch file's parameters.
+//
+// six_wheel is ALSO a ROS2 node parameter (default false), unlike
+// four_wheel_drive above -- it's conditional because, unlike 4WD (now
+// always on for this track), turning it on changes the FMU's whole
+// chassis/wheelbase geometry, which would silently break the 4-wheel URDF
+// if forced on unconditionally. Set via fmu_client_open_begin()/_finish()
+// same as four_wheel_drive, for the same structural-parameter reason.
 #include <stdexcept>
 #include <string>
 
@@ -59,6 +66,7 @@ public:
     if (fmu_dir.empty()) {
       throw std::invalid_argument("required parameter 'fmu_dir' not set");
     }
+    const bool six_wheel = declare_parameter<bool>("six_wheel", false);
 
     fmu_ = fmu_client_open_begin(fmu_dir.c_str(), get_name());
     if (!fmu_) {
@@ -73,6 +81,7 @@ public:
     ok &= find_vr_or_throw("steer_fr_deg_in", &vr_steer_fr_deg_in_);
     ok &= find_vr_or_throw("independent_front_steer", &vr_independent_front_steer_);
     ok &= find_vr_or_throw("four_wheel_drive", &vr_four_wheel_drive_);
+    ok &= find_vr_or_throw("six_wheel", &vr_six_wheel_);
     ok &= find_vr_or_throw("steer_FL_deg", &vr_steer_fl_deg_);
     ok &= find_vr_or_throw("steer_FR_deg", &vr_steer_fr_deg_);
     ok &= find_vr_or_throw("speed_mps", &vr_speed_mps_);
@@ -81,14 +90,17 @@ public:
     }
 
     // Same as chrono_fmu_system_interface's on_init(): take FL/FR steer
-    // angles independently instead of the old shared steer_deg, and turn
-    // on four_wheel_drive -- both set once, still in initialization mode
-    // (see file header comment for why four_wheel_drive specifically must
+    // angles independently instead of the old shared steer_deg, turn on
+    // four_wheel_drive, and turn on six_wheel IFF the six_wheel parameter
+    // asked for it -- all set once, still in initialization mode (see file
+    // header comment for why four_wheel_drive/six_wheel specifically must
     // be set before open_finish()).
-    FmuValueReference vr_flags[2] = {vr_independent_front_steer_, vr_four_wheel_drive_};
-    double ones[2] = {1.0, 1.0};
-    if (!fmu_client_set_real(fmu_, vr_flags, 2, ones)) {
-      throw std::runtime_error("fmu_client_set_real(independent_front_steer, four_wheel_drive) failed");
+    FmuValueReference vr_flags[3] = {
+      vr_independent_front_steer_, vr_four_wheel_drive_, vr_six_wheel_};
+    double flag_values[3] = {1.0, 1.0, six_wheel ? 1.0 : 0.0};
+    if (!fmu_client_set_real(fmu_, vr_flags, 3, flag_values)) {
+      throw std::runtime_error(
+        "fmu_client_set_real(independent_front_steer, four_wheel_drive, six_wheel) failed");
     }
 
     if (!fmu_client_open_finish(fmu_)) {
@@ -159,6 +171,7 @@ private:
   FmuValueReference vr_steer_fr_deg_in_{};
   FmuValueReference vr_independent_front_steer_{};
   FmuValueReference vr_four_wheel_drive_{};
+  FmuValueReference vr_six_wheel_{};
   FmuValueReference vr_steer_fl_deg_{};
   FmuValueReference vr_steer_fr_deg_{};
   FmuValueReference vr_speed_mps_{};

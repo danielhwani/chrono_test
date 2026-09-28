@@ -966,6 +966,31 @@ base_link → [steering, revolute] → front_left_knuckle → [front_left_wheel_
 
 **검증**: `chrono_fmu_system_interface_check` — 6개 state / 4개 command interface로 정확히 export, 앞바퀴 velocity가 뒷바퀴와 동일한 값(`3.637180`, 같은 no-slip 근사라 당연)으로 표시, 뒷바퀴 수치는 이 변경 전후로 완전히 동일(순수 가시성 추가, 로직 변화 없음 확인). 스플릿 버전도 라이브로 재확인 — 정지 상태(`0.0338`, 노이즈 범위)·실제 명령(`2.2445`, 4개 velocity 조인트 전부 동일값으로 안정 수렴) 둘 다 정상.
 
+### 4WD → 6x6 확장 — 두 버전 동시 적용
+
+FMU는 `six_wheel`/`drive_torque_mid`를 이미 지원했지만(ros2_control 작업 이전 단계, bit-exact 검증됨), `ros2_control` 두 트랙 모두 그걸 쓰지 않고 있었음. 이번에 인프로세스/스플릿 두 트랙에 동시에 배선함.
+
+**구조 파라미터라 `fmu_client_open_begin`/`_finish` 두 단계 패턴 필수**: `six_wheel`은 `four_wheel_drive`와 마찬가지로 `fmi2ExitInitializationMode`(FMU의 `build()`) 안에서 딱 한 번 읽혀서 바디/모터 레이아웃을 영구히 결정하는 값 — 4WD 때 찾은 `fmu_client_open()`의 구조적 파라미터 버그(README의 4WD 섹션 참고)와 똑같은 이유로, `open_begin()`으로 초기화 모드 진입 후 `SetReal`, 그 다음 `open_finish()`로 나가야 함.
+
+**같은 플러그인 바이너리가 4륜/6x6 URDF 둘 다에 쓰이므로 기본값은 반드시 off**: `four_wheel_drive`는 이제 두 트랙 다 무조건 켜지만, `six_wheel`은 껐다 켰다 해야 함 — 강제로 항상 켜면 4륜 URDF의 섀시/휠베이스 기하가 조용히 깨짐. 인프로세스는 URDF의 선택적 `<param name="six_wheel">true</param>`(없으면/"true" 아니면 false)로, 스플릿은 `chrono_split_ecu`/`chrono_split_dynamics_node` 양쪽의 ROS2 노드 파라미터(기본 false)로 껐다 켰다 함.
+
+**토크 분배**: 4WD의 "복제 대신 분배" 원칙을 3축으로 일반화 — `total_drive_torque / num_driven_axles`, `num_driven_axles`는 `six_wheel_ ? 3.0 : 2.0`. `chrono_split_dynamics_node`는 처음부터 "완전 범용 FMU 래퍼"로 설계돼 있어서(자체 헤더 코멘트) `drive_torque_mid`를 이미 무조건 전달하고 있었음 — 이번엔 구조적 플래그(`six_wheel` SetReal) 배선만 추가하면 됐음. `chrono_split_ecu_bridge_hw_interface`는 상태 전용 velocity 조인트를 이미 범용적으로 처리하는 순수 필드 매핑 브릿지라 6x6에 코드 변경 전혀 불필요.
+
+**차량 상수** (`vehicle_native.cpp`에서 grep으로 확인, 추측 아님): `CHASSIS_MASS_6W=2600.0`, `CHASSIS_DIMS_6W={4.4, 1.8, 0.5}`, `WHEELBASE_6W=3.4`(전축 `+1.7`, 후축 `-1.7`, 중간축 `0.0`), `TRACK=1.5`(4륜과 동일, `±0.75`), `WHEEL_RADIUS=0.32`/`WHEEL_WIDTH=0.22`(동일), `chassis_z=1.19`(레이아웃 무관 동일 공식).
+
+**새 URDF 2개** (`chrono_vehicle_6x6.urdf`, `chrono_vehicle_split_6x6.urdf`): 앞바퀴 스핀과 같은 방식 — 중간축 조인트(`mid_left/right_wheel_joint`)는 뒷바퀴처럼 `base_link`에 직접 매달리고(조향 없음), `state_interface`만 있고 `command_interface`는 없음. `xmllint`/`check_urdf` 통과, XML 주석 `--` 문제 5, 6번째 재발(같은 em dash 수정). `chrono_fmu_system_interface_check`로 확인: 8개 state / 4개 command interface export, 6개 바퀴 전부 `2.709956`으로 안정 수렴(4륜과 다른 값은 섀시 질량/기하가 다르니 당연), 기존 4륜 경로는 `3.637180`으로 완전히 그대로(회귀 없음).
+
+**컨트롤러 YAML도 별도 필요했음** — 처음엔 놓칠 뻔한 부분: `ackermann_steering_controller`는 `wheelbase` 파라미터를 조향각/오도메트리 계산에 직접 사용하는데, 4륜용 YAML의 `wheelbase: 2.6`을 6x6(`3.4`)에 그대로 재사용하면 크래시는 안 나지만 조향 기하가 조용히 틀어짐. `chrono_vehicle_controllers_6x6.yaml`을 새로 만들어 `wheelbase: 3.4`만 다르게 함(track/radius는 공유).
+
+**launch 파일**: 두 트랙 다 `six_wheel` launch argument(기본 `"false"`) 추가, `OpaqueFunction` 패턴으로 런타임 값에 따라 URDF/컨트롤러 YAML을 고름(모듈 레벨 순수 Python은 launch argument 런타임 값을 볼 수 없어서). 스플릿 쪽은 추가로 `six_wheel` 값을 `chrono_split_ecu`/`chrono_split_dynamics_node` 두 노드의 ROS 파라미터로도 전달 — 인프로세스는 URDF 파일 하나만 바꾸면 끝이지만, 스플릿은 두 개의 독립 프로세스에 같은 값을 따로 전달해야 함.
+
+**실터미널 검증, 두 트랙 다**: idle 안정성(러너웨이 없음, 6개 조인트 정상 export) + 실제 명령(`linear.x=1.0, angular.z=0.3`) 수렴 테스트. 인프로세스 6x6: 6개 바퀴 전부 `0.351 rad/s`로 안정 수렴. 스플릿 6x6: 6개 바퀴 전부 `0.310 rad/s`로 안정 수렴(ECU 루프 특성상 인프로세스와 정확히 같은 값은 아니지만 둘 다 안정적으로 단일 값에 수렴 — 예상된 패턴).
+
+```bash
+ros2 launch chrono_ros2_control/launch/chrono_vehicle_control.launch.py six_wheel:=true
+ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_control.launch.py six_wheel:=true
+```
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

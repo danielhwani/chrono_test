@@ -1,0 +1,198 @@
+<?xml version="1.0"?>
+<robot name="chrono_vehicle_6x6">
+
+  <!--
+    6x6 (in-process/인프로세스 버전) sibling of chrono_vehicle.urdf (the
+    4-wheel/2-axle URDF) — that file is untouched. Same ChronoFmuSystemInterface
+    plugin, same fmu_dir, plus one extra <param name="six_wheel">true</param>
+    that tells the plugin to (a) turn on native_vehicle_fmu's six_wheel
+    structural flag and (b) fan the traction P-loop's torque across 3 axles
+    instead of 2. Default (param absent, as in chrono_vehicle.urdf) keeps
+    every existing 4-wheel/2-axle behavior bit-exact — this is purely
+    additive.
+
+    Geometry matches native_vehicle_fmu/vehicle_native.cpp's own six_wheel
+    constants exactly (not arbitrary): CHASSIS_DIMS_6W=(4.4, 1.8, 0.5),
+    WHEELBASE_6W=3.4 (front at +1.7, rear at -1.7), TRACK=1.5 (unchanged,
+    ±0.75), WHEEL_RADIUS/WIDTH unchanged (0.32/0.22). chassis_z stays 1.19
+    — WHEEL_RADIUS/SUSPENSION_TRAVEL_REST/CHASSIS_CG_HEIGHT are shared
+    constants, only chassis dims/wheelbase actually change for six_wheel.
+
+    Mid axle (x=0.0, from make_corner()'s six_wheel branch) is driven-only,
+    no steering — same state-only/no-command_interface pattern as the
+    front spin joints (4WD): ackermann_steering_controller has no
+    mid-traction command path, and the P-loop's torque is fanned out
+    internally by the plugin, same principle as front/rear.
+  -->
+
+  <material name="chassis_red">
+    <color rgba="0.75 0.1 0.1 1.0"/>
+  </material>
+  <material name="wheel_dark">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 1.19" rpy="0 0 0"/>
+      <geometry>
+        <box size="4.4 1.8 0.5"/>
+      </geometry>
+      <material name="chassis_red"/>
+    </visual>
+  </link>
+
+  <link name="front_left_knuckle"/>
+  <link name="front_right_knuckle"/>
+
+  <link name="front_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="front_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="mid_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="mid_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="rear_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="rear_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+
+  <joint name="front_left_steering_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="front_left_knuckle"/>
+    <origin xyz="1.7 0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6" upper="0.6" effort="100" velocity="10"/>
+  </joint>
+  <joint name="front_right_steering_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="front_right_knuckle"/>
+    <origin xyz="1.7 -0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6" upper="0.6" effort="100" velocity="10"/>
+  </joint>
+
+  <!-- 4WD front spin: state-only, no command_interface — see
+       chrono_vehicle.urdf's matching joint comment. -->
+  <joint name="front_left_wheel_joint" type="continuous">
+    <parent link="front_left_knuckle"/>
+    <child link="front_left_wheel"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <joint name="front_right_wheel_joint" type="continuous">
+    <parent link="front_right_knuckle"/>
+    <child link="front_right_wheel"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- Mid axle: driven, no steering — straight off base_link, same as
+       rear. State-only, no command_interface, same reasoning as front. -->
+  <joint name="mid_left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="mid_left_wheel"/>
+    <origin xyz="0 0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <joint name="mid_right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="mid_right_wheel"/>
+    <origin xyz="0 -0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <joint name="rear_left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_left_wheel"/>
+    <origin xyz="-1.7 0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <joint name="rear_right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_right_wheel"/>
+    <origin xyz="-1.7 -0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <ros2_control name="ChronoVehicleSystem" type="system">
+    <hardware>
+      <plugin>chrono_ros2_control/ChronoFmuSystemInterface</plugin>
+      <param name="fmu_dir">/home/daniel/chrono_test/fmu/cpp/native_vehicle_fmu</param>
+      <param name="six_wheel">true</param>
+    </hardware>
+
+    <joint name="front_left_steering_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="front_right_steering_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="rear_left_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="rear_right_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="front_left_wheel_joint">
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="front_right_wheel_joint">
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="mid_left_wheel_joint">
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="mid_right_wheel_joint">
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+</robot>
