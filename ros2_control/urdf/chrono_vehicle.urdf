@@ -60,6 +60,18 @@
     </visual>
   </link>
 
+  <!-- Front knuckles: no visual, purely a kinematic pass-through link
+       between the steering revolute and the new front wheel spin joint
+       below — matching vehicle_native.cpp's own body chain (upright ->
+       knuckle -> wheel, spin_parent = knuckle when steered). Needed once
+       front wheels got a real spin joint (4WD): a single link can't be
+       the child of two independent joints, so steering and spin each need
+       their own link in the chain, same as the rear axle never needed
+       (rear has no steering, so rear_left/right_wheel_joint attaches
+       straight to base_link). -->
+  <link name="front_left_knuckle"/>
+  <link name="front_right_knuckle"/>
+
   <!-- Wheel cylinders: WHEEL_RADIUS=0.32, WHEEL_WIDTH=0.22. URDF <cylinder>
        is always local-Z-axis, so rpy="1.5708 0 0" (90 deg about X) points
        it along Y instead — the rolling axis, matching
@@ -104,20 +116,44 @@
   <!-- Front axle: steering joints (revolute about Z, matching vehicle_native.cpp's
        knuckle->wheel steer axis). ackermann_steering_controller computes the
        Ackermann-corrected left/right angles itself from one high-level
-       steering command — these two joints are what it writes into. -->
+       steering command — these two joints are what it writes into. Child
+       is now the knuckle (not the wheel directly) — see the knuckle link
+       comment above. -->
   <joint name="front_left_steering_joint" type="revolute">
     <parent link="base_link"/>
-    <child link="front_left_wheel"/>
+    <child link="front_left_knuckle"/>
     <origin xyz="1.3 0.75 0.32" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
     <limit lower="-0.6" upper="0.6" effort="100" velocity="10"/>
   </joint>
   <joint name="front_right_steering_joint" type="revolute">
     <parent link="base_link"/>
-    <child link="front_right_wheel"/>
+    <child link="front_right_knuckle"/>
     <origin xyz="1.3 -0.75 0.32" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
     <limit lower="-0.6" upper="0.6" effort="100" velocity="10"/>
+  </joint>
+
+  <!-- Front axle spin (4WD): state-only, no command_interface below —
+       ackermann_steering_controller has no front-traction command path at
+       all (confirmed against its real source, step 3), and the 4WD P-loop
+       already drives the front axle's torque from the rear-axle velocity
+       command (see ChronoFmuSystemInterface's write()) — nothing should
+       ever write a target here. Zero origin offset from the knuckle: the
+       knuckle sits at the same point vehicle_native.cpp's knuckle body
+       does, and the wheel attaches there with no further offset, same as
+       vehicle_native.cpp's own knuckle->wheel revolute. -->
+  <joint name="front_left_wheel_joint" type="continuous">
+    <parent link="front_left_knuckle"/>
+    <child link="front_left_wheel"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <joint name="front_right_wheel_joint" type="continuous">
+    <parent link="front_right_knuckle"/>
+    <child link="front_right_wheel"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
   </joint>
 
   <!-- Rear axle: traction (spin) joints, continuous rotation about Y
@@ -160,6 +196,15 @@
     </joint>
     <joint name="rear_right_wheel_joint">
       <command_interface name="velocity"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <!-- 4WD front spin: state-only, no command_interface — see the
+         matching joint comment above for why nothing should ever command
+         this. -->
+    <joint name="front_left_wheel_joint">
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="front_right_wheel_joint">
       <state_interface name="velocity"/>
     </joint>
   </ros2_control>

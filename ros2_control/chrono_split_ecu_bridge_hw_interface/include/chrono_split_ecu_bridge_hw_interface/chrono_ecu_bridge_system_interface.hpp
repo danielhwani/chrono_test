@@ -63,6 +63,12 @@ private:
     std::string interface;  // hardware_interface::HW_IF_POSITION or HW_IF_VELOCITY
     double command = 0.0;
     double state = 0.0;
+    // false for a state-only joint (no <command_interface> in the URDF --
+    // the 4WD front wheel spin joints, which report velocity but must
+    // never be written to). export_command_interfaces() skips these, and
+    // write()'s command-averaging must not include them either -- same
+    // reasoning as ChronoFmuSystemInterface's identical field.
+    bool has_command = true;
   };
   std::vector<JointIO> joints_;
 

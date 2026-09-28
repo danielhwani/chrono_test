@@ -952,6 +952,20 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ros2 launch chrono_split_
 
 두 버그 다 진단용 임시 `fprintf` 로그로 근본 원인까지 추적한 뒤 코드에서 제거 — 커밋에는 안 남김, 발견 과정과 근거만 여기 기록.
 
+### 앞바퀴 스핀 조인트 추가 — "4WD인데 왜 뒷바퀴 속도만 보이지?"
+
+4WD 검증하면서 나온 질문: `chrono_fmu_system_interface_check` 출력엔 왜 `rear_left/right_wheel_joint/velocity`만 나오고 앞바퀴는 안 나오는가? 답은 간단했음 — **URDF에 앞바퀴 "회전 속도"를 나타내는 조인트 자체가 없었음**. 원래 이 URDF는 후륜구동 Ackermann 전제로 설계돼서(3단계), 앞바퀴는 조향(position)만 있고 스핀(velocity) 조인트가 아예 없었음. 4WD가 진짜 적용됐다는 건 그동안 "뒷바퀴 속도"(사실은 `speed_mps` 기반 차량 전체 근사치)가 2WD/4WD 사이에서 달라지는 걸로 **간접 확인**해온 상태였음.
+
+**구조 변경** (`chrono_vehicle.urdf`, `chrono_vehicle_split.urdf` 둘 다): 조향과 스핀을 둘 다 넣으려면 링크 하나가 두 개의 독립 조인트의 자식이 될 수 없어서, 그 사이에 **너클(knuckle) 링크**를 끼워야 함 — `vehicle_native.cpp`의 실제 바디 체인(업라이트→너클→바퀴, 너클이 조향축이자 스핀축의 부모)과 동일하게 맞춤:
+```
+base_link → [steering, revolute] → front_left_knuckle → [front_left_wheel_joint, continuous] → front_left_wheel(비주얼)
+```
+새 스핀 조인트(`front_left/right_wheel_joint`)는 **`state_interface`만 있고 `command_interface`는 없음** — `ackermann_steering_controller`가 애초에 앞바퀴 트랙션을 커맨드할 방법이 없고, 4WD 토크는 이미 뒷바퀴 명령 기반 P 루프에서 계산돼 나가니 아무것도 여기에 값을 써서는 안 됨. `check_urdf` 통과 확인, XML 주석 `--` 문제 4번째 재발(같은 em dash 수정).
+
+**플러그인 쪽 수정** (`ChronoFmuSystemInterface`, `ChronoEcuBridgeSystemInterface` 둘 다): `on_init()`의 조인트 검증을 "커맨드 인터페이스 정확히 1개"에서 "0개 또는 1개(상태는 항상 정확히 1개)"로 완화, `JointIO`에 `has_command` 플래그 추가. `export_command_interfaces()`는 `has_command=false`인 조인트를 건너뜀. **중요한 함정 하나 피함**: `write()`의 뒷바퀴 속도 커맨드 평균 계산 루프가 원래 `interface==VELOCITY`인 모든 조인트를 다 더했는데, 앞바퀴 스핀 조인트도 이제 velocity 인터페이스라서 그대로 뒀으면 값이 없는(기본값 0.0) 앞바퀴 커맨드가 몰래 섞여 들어가 P 루프 목표값을 오염시켰을 것 — `has_command` 조건을 추가로 걸어서 방지. `read()`는 이미 모든 velocity 조인트를 동일하게 처리하는 구조라 별도 수정 없이 앞바퀴 상태도 자동으로 채워짐.
+
+**검증**: `chrono_fmu_system_interface_check` — 6개 state / 4개 command interface로 정확히 export, 앞바퀴 velocity가 뒷바퀴와 동일한 값(`3.637180`, 같은 no-slip 근사라 당연)으로 표시, 뒷바퀴 수치는 이 변경 전후로 완전히 동일(순수 가시성 추가, 로직 변화 없음 확인). 스플릿 버전도 라이브로 재확인 — 정지 상태(`0.0338`, 노이즈 범위)·실제 명령(`2.2445`, 4개 velocity 조인트 전부 동일값으로 안정 수렴) 둘 다 정상.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

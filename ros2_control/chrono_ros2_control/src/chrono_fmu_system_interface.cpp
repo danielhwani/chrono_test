@@ -89,20 +89,26 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
 
   joints_.reserve(info_.joints.size());
   for (const auto & joint : info_.joints) {
-    if (joint.command_interfaces.size() != 1 || joint.state_interfaces.size() != 1) {
+    // Exactly one state_interface always; command_interface is now
+    // OPTIONAL (0 or 1) -- the 4WD front wheel spin joints are
+    // state-only, see JointIO::has_command's comment.
+    if (joint.command_interfaces.size() > 1 || joint.state_interfaces.size() != 1) {
       RCLCPP_ERROR(
-        logger(), "joint '%s' must declare exactly one command_interface and one state_interface",
+        logger(),
+        "joint '%s' must declare at most one command_interface and exactly one state_interface",
         joint.name.c_str());
       return hardware_interface::CallbackReturn::ERROR;
     }
-    const std::string & iface = joint.command_interfaces[0].name;
+    const bool has_command = !joint.command_interfaces.empty();
+    const std::string & iface =
+      has_command ? joint.command_interfaces[0].name : joint.state_interfaces[0].name;
     if (iface != hardware_interface::HW_IF_POSITION && iface != hardware_interface::HW_IF_VELOCITY) {
       RCLCPP_ERROR(
         logger(), "joint '%s' has unsupported interface '%s' (only position/velocity wired so far)",
         joint.name.c_str(), iface.c_str());
       return hardware_interface::CallbackReturn::ERROR;
     }
-    joints_.push_back(JointIO{joint.name, iface, 0.0, 0.0});
+    joints_.push_back(JointIO{joint.name, iface, 0.0, 0.0, has_command});
   }
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -123,6 +129,9 @@ std::vector<hardware_interface::CommandInterface> ChronoFmuSystemInterface::expo
   std::vector<hardware_interface::CommandInterface> interfaces;
   interfaces.reserve(joints_.size());
   for (auto & joint : joints_) {
+    if (!joint.has_command) {
+      continue;  // 4WD front wheel spin joints -- state-only, see JointIO
+    }
     interfaces.emplace_back(joint.name, joint.interface, &joint.command);
   }
   return interfaces;
@@ -184,11 +193,16 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
   // read from joints_ state (set by read() from the previous cycle's
   // speed_mps -- both rear wheel states are already the same no-slip
   // approximation, so either one works as the axle's measured velocity).
+  // has_command additionally required here (not just interface==VELOCITY)
+  // -- the 4WD front wheel spin joints also report HW_IF_VELOCITY state
+  // now, but have no real command to average in (their .command is a
+  // meaningless default 0.0 that would otherwise silently dilute the P
+  // loop's target).
   double vel_cmd_sum = 0.0;
   int vel_cmd_count = 0;
   double vel_measured = 0.0;
   for (const auto & joint : joints_) {
-    if (joint.interface == hardware_interface::HW_IF_VELOCITY) {
+    if (joint.interface == hardware_interface::HW_IF_VELOCITY && joint.has_command) {
       vel_cmd_sum += joint.command;
       ++vel_cmd_count;
       vel_measured = joint.state;

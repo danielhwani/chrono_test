@@ -83,6 +83,14 @@ private:
     std::string interface;  // hardware_interface::HW_IF_POSITION or HW_IF_VELOCITY
     double command = 0.0;
     double state = 0.0;
+    // false for a state-only joint (no <command_interface> in the URDF --
+    // added for the 4WD front wheel spin joints, which report velocity
+    // but must never be written to: ackermann_steering_controller has no
+    // front-traction command path, and 4WD's torque is already driven
+    // from the rear-axle command. export_command_interfaces() skips these
+    // entirely, and write()'s command-averaging loop must not include
+    // them (their .command stays a meaningless default 0.0 forever).
+    bool has_command = true;
   };
   std::vector<JointIO> joints_;
 

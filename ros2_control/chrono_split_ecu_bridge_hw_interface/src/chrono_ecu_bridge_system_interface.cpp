@@ -21,14 +21,19 @@ hardware_interface::CallbackReturn ChronoEcuBridgeSystemInterface::on_init(
   // unchanged here too.
   joints_.reserve(info_.joints.size());
   for (const auto & joint : info_.joints) {
-    if (joint.command_interfaces.size() != 1 || joint.state_interfaces.size() != 1) {
+    // Exactly one state_interface always; command_interface is now
+    // OPTIONAL (0 or 1) -- the 4WD front wheel spin joints are
+    // state-only, see JointIO::has_command's comment.
+    if (joint.command_interfaces.size() > 1 || joint.state_interfaces.size() != 1) {
       RCLCPP_ERROR(
         rclcpp::get_logger("ChronoEcuBridgeSystemInterface"),
-        "joint '%s' must declare exactly one command_interface and one state_interface",
+        "joint '%s' must declare at most one command_interface and exactly one state_interface",
         joint.name.c_str());
       return hardware_interface::CallbackReturn::ERROR;
     }
-    const std::string & iface = joint.command_interfaces[0].name;
+    const bool has_command = !joint.command_interfaces.empty();
+    const std::string & iface =
+      has_command ? joint.command_interfaces[0].name : joint.state_interfaces[0].name;
     if (iface != hardware_interface::HW_IF_POSITION && iface != hardware_interface::HW_IF_VELOCITY) {
       RCLCPP_ERROR(
         rclcpp::get_logger("ChronoEcuBridgeSystemInterface"),
@@ -36,7 +41,7 @@ hardware_interface::CallbackReturn ChronoEcuBridgeSystemInterface::on_init(
         joint.name.c_str(), iface.c_str());
       return hardware_interface::CallbackReturn::ERROR;
     }
-    joints_.push_back(JointIO{joint.name, iface, 0.0, 0.0});
+    joints_.push_back(JointIO{joint.name, iface, 0.0, 0.0, has_command});
   }
 
   // hardware_interface::SystemInterface has no built-in node in Humble
@@ -73,6 +78,9 @@ ChronoEcuBridgeSystemInterface::export_command_interfaces()
   std::vector<hardware_interface::CommandInterface> interfaces;
   interfaces.reserve(joints_.size());
   for (auto & joint : joints_) {
+    if (!joint.has_command) {
+      continue;  // 4WD front wheel spin joints -- state-only, see JointIO
+    }
     interfaces.emplace_back(joint.name, joint.interface, &joint.command);
   }
   return interfaces;
@@ -107,7 +115,10 @@ hardware_interface::return_type ChronoEcuBridgeSystemInterface::write(
     if (joint.interface == hardware_interface::HW_IF_POSITION) {
       const bool is_left = joint.name.find("left") != std::string::npos;
       (is_left ? cmd.steer_fl_rad : cmd.steer_fr_rad) = joint.command;
-    } else {
+    } else if (joint.has_command) {
+      // has_command required: the 4WD front wheel spin joints also report
+      // HW_IF_VELOCITY now but have no real command to average in (their
+      // .command is a meaningless default 0.0).
       vel_sum += joint.command;
       ++vel_count;
     }
