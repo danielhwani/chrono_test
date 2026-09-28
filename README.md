@@ -896,6 +896,31 @@ if (std::abs(vel_error) >= kVelocityDeadband) {
 
 **남은 일**: `chrono_split_ecu`에 실제 P 제어기/데드밴드/단위변환 로직 이식, `chrono_split_dynamics_node`에 실제 `fmu_client` 연동, 그리고 이 셋을 함께 띄우는 launch 파일 — 전부 다음 단계로 남겨둠.
 
+### 스플릿 버전 — 실제 로직 채우고 종단간 검증
+
+전날 스캐폴딩만 해뒀던 스플릿 버전(`chrono_split_*`)에 실제 로직을 채워넣고, 인프로세스 버전(`chrono_ros2_control`)과 나란히 실제로 돌려서 검증함.
+
+**`chrono_split_ecu`**: 인프로세스 버전의 `chrono_fmu_system_interface.cpp`(4b/4c)에 있던 로직을 그대로 이식 — 조향은 단위 변환(rad↔deg)만 하는 순수 패스스루(이미 독립 FL/FR이라 평균 낼 필요 없음), 트랙션은 동일한 P 제어기(`kVelocityKp=80.0`)+데드밴드(`kVelocityDeadband=0.1`)+클램프(`kMaxDriveTorqueRear=800.0`) 상수 그대로 재사용. `drive_torque_front_nm`/`drive_torque_mid_nm`은 의도적으로 `0.0` 고정 — 인프로세스 버전도 아직 4WD/6x6 안 켜져 있어서, 이렇게 해야 두 버전이 정확히 같은 조건에서 비교 가능함.
+
+**`chrono_split_dynamics_node`**: `fmu_client_open`/`find_vr`/`set_real`/`do_step`/`get_real` 호출을 `chrono_fmu_system_interface.cpp`의 `on_init`/`write`/`read`와 동일한 패턴으로 그대로 이식. 차이점 하나 — 이 노드는 **범용 FMU 래퍼**로 만들어서 `drive_torque_front`/`_mid`/`_rear` 세 값을 항상 다 흘려보냄(ECU가 지금 앞/중은 0을 보내니 결과적으로 인프로세스와 동일하지만, 나중에 ECU 쪽에서 4WD/6x6을 켜도 이 노드는 손댈 필요 없음). `fmu_dir`은 URDF `<param>` 대신 ROS2 노드 파라미터로 받음(`hardware_interface` 컴포넌트가 아니라 순수 노드라서).
+
+**`chrono_vehicle_split.urdf`** (새 파일, 기존 `chrono_vehicle.urdf`는 그대로 둠): `<ros2_control><hardware><plugin>`만 `chrono_split_ecu_bridge_hw_interface/ChronoEcuBridgeSystemInterface`로 바뀜, `fmu_dir` `<param>` 없음(그 정보가 이제 동역학 노드 쪽 파라미터라서). 나머지 조인트/비주얼은 완전히 동일.
+
+**`chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_control.launch.py`** (새 launch 파일): `chrono_split_dynamics_node` + `chrono_split_ecu` + `controller_manager`(+ `joint_state_broadcaster`/`ackermann_steering_controller` 스포너) + `robot_state_publisher`까지 5개 프로세스를 한 번에 띄움. 컨트롤러 설정 YAML은 인프로세스 버전 것(`chrono_ros2_control/config/chrono_vehicle_controllers.yaml`)을 **그대로 재사용** — 조인트 이름/인터페이스 타입이 완전히 같아서 새로 만들 필요 없었음(`lock_memory: false`도 이미 반영돼 있어서 이번엔 그 문제도 안 겪음).
+
+```bash
+cd ros2_control
+source /opt/ros/humble/setup.bash && source install/setup.bash
+LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_control.launch.py
+```
+
+**빌드 중 걸린 것**: 새 URDF에서 또 XML 주석 안 `--` 문제(세 번째 재발) — 같은 em dash 치환으로 해결.
+
+**검증 — 인프로세스 버전과 같은 시나리오로 교차 확인**:
+- 5개 프로세스 전부 정상 기동, `joint_state_broadcaster`/`ackermann_steering_controller` 둘 다 첫 시도에 configure+activate 성공(설정 YAML을 재사용해서 `lock_memory` 문제도 재발 안 함)
+- **정지 상태**: 명령 없이 몇 초 방치 → `velocity=0.0055` rad/s(노이즈 범위 내), 발산 없음 — 데드밴드가 이식된 그대로 잘 작동함
+- **실제 명령**(`linear.x=1.0, angular.z=0.3`, 인프로세스 검증 때와 동일한 시나리오): 조향각 `0.567`/`0.789` rad — **인프로세스 버전과 완전히 동일**(같은 컨트롤러 설정이니 당연하지만, 독립 조향 경로가 브릿지를 통과해도 안 깨진다는 증거). 뒷바퀴 속도는 `2.9 → 2.9 → 2.36 → 2.32` rad/s로 안정적으로 수렴 — 인프로세스 버전의 `2.86 → 2.75 → 2.05 → 2.02 → 2.09`와 정확히 같은 수치는 아니지만(브릿지 두 단계를 거치는 타이밍 차이가 있으니 당연함), **같은 질적 동작**(진동/붕괴 없이 비슷한 범위로 수렴)을 보임 — 스플릿 버전의 제어 로직이 실제로 올바르게 작동한다는 확인.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

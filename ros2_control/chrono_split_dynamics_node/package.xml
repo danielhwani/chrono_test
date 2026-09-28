@@ -6,10 +6,9 @@
   <description>
     FMU-wrapped dynamics node for the split ros2_control / ECU /
     FMU-dynamics architecture: subscribes VehicleCommand (from
-    chrono_split_ecu, Bridge 2), publishes VehicleStatus. Will wrap
-    fmu_client the same way ChronoFmuSystemInterface does today, just as
-    a plain node instead of a hardware_interface plugin -- see
-    ../../README.md.
+    chrono_split_ecu, Bridge 2), publishes VehicleStatus. Wraps fmu_client
+    the same way ChronoFmuSystemInterface does, just as a plain node
+    instead of a hardware_interface plugin -- see ../../README.md.
   </description>
   <maintainer email="danielhwani@gmail.com">daniel</maintainer>
   <license>MIT</license>

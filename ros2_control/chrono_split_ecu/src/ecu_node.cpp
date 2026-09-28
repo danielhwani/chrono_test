@@ -1,31 +1,32 @@
-// Scaffolding only (per the user's explicit request: structure/wiring
-// first, control logic later as its own step -- same "verify wiring, then
-// fill logic" pattern this whole project has followed). This is the
-// "virtual ECU" node in the split architecture:
+// "Virtual ECU" node in the split architecture:
 //
 //   ros2_control <-- EcuStatus/EcuCommand --> [this node] <-- VehicleStatus/VehicleCommand --> FMU dynamics node
 //
 // Bridge 1 (EcuCommand/EcuStatus, chrono_split_msgs) uses
 // hardware_interface-style units (rad, rad/s). Bridge 2
 // (VehicleCommand/VehicleStatus) uses the FMU's native units (deg, N*m).
-// This node is where that conversion belongs -- NOT in the new
-// SystemInterface (chrono_split_ecu_bridge_hw_interface), which is meant to stay
-// a thin translation layer with zero FMU-specific knowledge, and NOT in
-// the FMU dynamics node, which should stay a thin fmu_client wrapper with
-// zero control-loop knowledge. Concretely, still TODO here (deliberately
-// left as a stub, not implemented yet):
-//   - the 4b velocity->torque P loop + deadband (currently lives in
-//     chrono_ros2_control's chrono_fmu_system_interface.cpp -- that file
-//     is untouched/still working standalone; this is where that same
-//     logic will move to for the split architecture)
-//   - fan-out of one traction torque value to front/mid/rear
-//     drive_torque_*_nm (mid unused until six_wheel is wired up)
-//   - the rad<->deg unit conversions for steering
+// This node owns that conversion -- NOT chrono_split_ecu_bridge_hw_interface
+// (a thin translation layer with zero FMU-specific knowledge) and NOT
+// chrono_split_dynamics_node (a thin fmu_client wrapper with zero
+// control-loop knowledge).
 //
-// Right now this just proves the pub/sub wiring compiles and runs: it
-// echoes the latest EcuCommand straight through to VehicleCommand
-// unconverted (wrong units, correctness not the point yet), and the
-// latest VehicleStatus straight through to EcuStatus unconverted.
+// Control logic ported verbatim from chrono_ros2_control's
+// chrono_fmu_system_interface.cpp (steps 4b/4c of the in-process version's
+// prep plan) -- that file is untouched, this is the same logic relocated
+// to run in its own process instead of inside a hardware_interface plugin:
+//   - steering: straight rad<->deg passthrough, no averaging (EcuCommand
+//     already carries independent FL/FR angles -- 4c's design)
+//   - traction: plain P controller (kVelocityKp) with a deadband
+//     (kVelocityDeadband) against natural suspension noise near rest (4b's
+//     step-7 finding -- a runaway was found and fixed with the deadband;
+//     same constants reused here rather than re-derived) and a torque
+//     clamp (kMaxDriveTorqueRear)
+//   - drive_torque_front_nm/drive_torque_mid_nm stay 0.0 -- 4WD/six_wheel
+//     fan-out is a deliberately separate, later extension (not yet done
+//     even in the in-process version), keeping this a direct behavioral
+//     match to chrono_ros2_control for the planned cross-check
+#include <cmath>
+
 #include <rclcpp/rclcpp.hpp>
 
 #include "chrono_split_msgs/msg/ecu_command.hpp"
@@ -37,6 +38,20 @@ using chrono_split_msgs::msg::EcuCommand;
 using chrono_split_msgs::msg::EcuStatus;
 using chrono_split_msgs::msg::VehicleCommand;
 using chrono_split_msgs::msg::VehicleStatus;
+
+namespace
+{
+constexpr double kDegPerRad = 180.0 / M_PI;
+constexpr double kRadPerDeg = M_PI / 180.0;
+// Matches vehicle_native.cpp's WHEEL_RADIUS -- see
+// chrono_fmu_system_interface.hpp's identical constant/comment.
+constexpr double kWheelRadius = 0.32;
+// 4b's P gain and torque clamp, unchanged from chrono_fmu_system_interface.hpp.
+constexpr double kVelocityKp = 80.0;
+constexpr double kMaxDriveTorqueRear = 800.0;
+// Step 7's deadband fix, unchanged from chrono_fmu_system_interface.hpp.
+constexpr double kVelocityDeadband = 0.1;
+}  // namespace
 
 class ChronoSplitEcuNode : public rclcpp::Node
 {
@@ -55,9 +70,10 @@ public:
       create_publisher<VehicleCommand>("vehicle_command", rclcpp::SystemDefaultsQoS());
 
     // 500 Hz, matching native_vehicle_fmu's own step size (see
-    // ChronoFmuSystemInterface's kStepSize) -- a plain wall timer here has
-    // different jitter characteristics than controller_manager's dedicated
-    // RT thread, worth measuring once real logic lands in this callback.
+    // chrono_fmu_system_interface.hpp's kStepSize) -- a plain wall timer
+    // here has different jitter characteristics than controller_manager's
+    // dedicated RT thread, worth measuring once this is cross-checked
+    // against the in-process version.
     timer_ = create_wall_timer(
       std::chrono::milliseconds(2), std::bind(&ChronoSplitEcuNode::tick, this));
   }
@@ -65,21 +81,38 @@ public:
 private:
   void tick()
   {
-    // TODO: replace with the real P-loop/deadband/unit-conversion logic
-    // (see the file header comment). Placeholder pass-through only, to
-    // prove the pub/sub wiring itself works end to end.
+    // Steering: straight passthrough with unit conversion, no averaging --
+    // EcuCommand already carries independent FL/FR angles.
+    const double steer_fl_deg = latest_ecu_command_.steer_fl_rad * kDegPerRad;
+    const double steer_fr_deg = latest_ecu_command_.steer_fr_rad * kDegPerRad;
+
+    // Traction: same no-slip approximation as chrono_fmu_system_interface's
+    // read() (the FMU has no true per-wheel omega output), then the same
+    // P loop + deadband as its write().
+    const double vel_measured = latest_vehicle_status_.speed_mps / kWheelRadius;
+    const double vel_error = latest_ecu_command_.traction_vel_rad_s - vel_measured;
+    double drive_torque_rear = 0.0;
+    if (std::abs(vel_error) >= kVelocityDeadband) {
+      drive_torque_rear = kVelocityKp * vel_error;
+    }
+    if (drive_torque_rear > kMaxDriveTorqueRear) {
+      drive_torque_rear = kMaxDriveTorqueRear;
+    } else if (drive_torque_rear < -kMaxDriveTorqueRear) {
+      drive_torque_rear = -kMaxDriveTorqueRear;
+    }
+
     VehicleCommand vc;
-    vc.steer_fl_deg = latest_ecu_command_.steer_fl_rad;
-    vc.steer_fr_deg = latest_ecu_command_.steer_fr_rad;
+    vc.steer_fl_deg = steer_fl_deg;
+    vc.steer_fr_deg = steer_fr_deg;
     vc.drive_torque_front_nm = 0.0;
     vc.drive_torque_mid_nm = 0.0;
-    vc.drive_torque_rear_nm = 0.0;
+    vc.drive_torque_rear_nm = drive_torque_rear;
     vehicle_command_pub_->publish(vc);
 
     EcuStatus es;
-    es.steer_fl_rad = latest_vehicle_status_.steer_fl_deg;
-    es.steer_fr_rad = latest_vehicle_status_.steer_fr_deg;
-    es.traction_vel_rad_s = latest_vehicle_status_.speed_mps;
+    es.steer_fl_rad = latest_vehicle_status_.steer_fl_deg * kRadPerDeg;
+    es.steer_fr_rad = latest_vehicle_status_.steer_fr_deg * kRadPerDeg;
+    es.traction_vel_rad_s = vel_measured;
     ecu_status_pub_->publish(es);
   }
 

@@ -36,6 +36,10 @@ install(
   DESTINATION include
 )
 install(
+  DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
+install(
   TARGETS chrono_split_ecu_bridge_system_interface
   EXPORT export_chrono_split_ecu_bridge_system_interface
   ARCHIVE DESTINATION lib
