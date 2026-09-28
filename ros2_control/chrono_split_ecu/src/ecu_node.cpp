@@ -21,10 +21,22 @@
 //     step-7 finding -- a runaway was found and fixed with the deadband;
 //     same constants reused here rather than re-derived) and a torque
 //     clamp (kMaxDriveTorqueRear)
-//   - drive_torque_front_nm/drive_torque_mid_nm stay 0.0 -- 4WD/six_wheel
-//     fan-out is a deliberately separate, later extension (not yet done
-//     even in the in-process version), keeping this a direct behavioral
-//     match to chrono_ros2_control for the planned cross-check
+//   - 4WD: the P-loop's total torque is now split across both axles
+//     (matching chrono_ros2_control's own 4WD upgrade, same session) --
+//     not a second, independent front loop, since
+//     ackermann_steering_controller only ever provides the one traction
+//     reference this is computed from. Division, not duplication: a first
+//     attempt sent the FULL computed torque to both axles unchanged, which
+//     doubles the effective torque-per-unit-error a 2-axle vehicle
+//     experiences vs. the 1-axle case kVelocityKp/kVelocityDeadband were
+//     tuned against (silently doubling the loop's effective gain) --
+//     live-tested and confirmed to reproduce the exact step-7
+//     noise-resonance runaway from a standstill, identically on both the
+//     in-process and split versions (not a split-architecture-specific
+//     bug). A real 4WD driveline splits a torque demand across axles
+//     (transfer case), it doesn't duplicate it.
+//   - drive_torque_mid_nm stays 0.0 -- six_wheel fan-out is a deliberately
+//     separate, later extension (not yet done on either version)
 #include <cmath>
 
 #include <rclcpp/rclcpp.hpp>
@@ -91,22 +103,24 @@ private:
     // P loop + deadband as its write().
     const double vel_measured = latest_vehicle_status_.speed_mps / kWheelRadius;
     const double vel_error = latest_ecu_command_.traction_vel_rad_s - vel_measured;
-    double drive_torque_rear = 0.0;
+    double total_drive_torque = 0.0;
     if (std::abs(vel_error) >= kVelocityDeadband) {
-      drive_torque_rear = kVelocityKp * vel_error;
+      total_drive_torque = kVelocityKp * vel_error;
     }
-    if (drive_torque_rear > kMaxDriveTorqueRear) {
-      drive_torque_rear = kMaxDriveTorqueRear;
-    } else if (drive_torque_rear < -kMaxDriveTorqueRear) {
-      drive_torque_rear = -kMaxDriveTorqueRear;
+    if (total_drive_torque > kMaxDriveTorqueRear) {
+      total_drive_torque = kMaxDriveTorqueRear;
+    } else if (total_drive_torque < -kMaxDriveTorqueRear) {
+      total_drive_torque = -kMaxDriveTorqueRear;
     }
+    // 4WD: divided (not duplicated) across both axles -- see file header.
+    const double drive_torque = total_drive_torque / 2.0;
 
     VehicleCommand vc;
     vc.steer_fl_deg = steer_fl_deg;
     vc.steer_fr_deg = steer_fr_deg;
-    vc.drive_torque_front_nm = 0.0;
+    vc.drive_torque_front_nm = drive_torque;
     vc.drive_torque_mid_nm = 0.0;
-    vc.drive_torque_rear_nm = drive_torque_rear;
+    vc.drive_torque_rear_nm = drive_torque;
     vehicle_command_pub_->publish(vc);
 
     EcuStatus es;

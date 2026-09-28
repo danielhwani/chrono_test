@@ -45,8 +45,36 @@ typedef struct FmuClient FmuClient;
  * fmi2Instantiate (informational only, doesn't need to be unique).
  *
  * Returns NULL on any failure (a diagnostic is printed to stderr).
- */
+ *
+ * This is fmu_client_open_begin() immediately followed by
+ * fmu_client_open_finish() -- fine for any FMU variable that's read fresh
+ * every fmi2DoStep(), but NOT for a genuinely structural one that a model
+ * only reads once, inside its own fmi2ExitInitializationMode handler (e.g.
+ * native_vehicle_fmu's four_wheel_drive/six_wheel, which decide whether a
+ * front/mid drive motor gets built at all). A single-call fmu_client_open()
+ * gives no opportunity to fmu_client_set_real() such a variable before
+ * that handler runs -- discovered when a ros2_control plugin's on_init()
+ * tried to set four_wheel_drive=1.0 right after open() returned and got
+ * bit-identical output to four_wheel_drive=0.0, because
+ * fmi2ExitInitializationMode (and therefore the FMU's own build()) had
+ * already run by then. Use fmu_client_open_begin()/_finish() instead
+ * whenever a structural parameter needs to be set. */
 FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name);
+
+/* Same as fmu_client_open(), except stops after fmi2EnterInitializationMode
+ * -- the returned client is ready for fmu_client_set_real() (a structural
+ * parameter, or anything else) but NOT YET for fmu_client_do_step()/
+ * fmu_client_get_real(). Call fmu_client_open_finish() to complete
+ * initialization before stepping. Returns NULL on any failure (a
+ * diagnostic is printed to stderr), same as fmu_client_open(). */
+FmuClient* fmu_client_open_begin(const char* fmu_dir, const char* instance_name);
+
+/* Runs fmi2ExitInitializationMode on a client from fmu_client_open_begin(),
+ * completing initialization -- the FMU is ready for fmu_client_do_step()/
+ * fmu_client_get_real() after this returns success. Returns 1 on success,
+ * 0 on failure (a diagnostic is printed to stderr); the client is still
+ * valid either way (pass it to fmu_client_close() as usual). */
+int fmu_client_open_finish(FmuClient* client);
 
 /* Looks up a Real variable's value reference by name, from the FMU's own
  * modelDescription.xml. Returns 1 and writes *out_vr on success, 0 if no

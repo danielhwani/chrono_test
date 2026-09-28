@@ -7,14 +7,22 @@
 // of a hardware_interface plugin.
 //
 // Unlike the ECU node, this one forwards all three axle torques
-// (front/mid/rear) unconditionally -- four_wheel_drive/six_wheel stay at
-// the FMU's own default-off values (never set here, matching
-// chrono_ros2_control exactly for the planned cross-check), so
-// drive_torque_front/_mid are simply ignored by the FMU whenever no
-// front/mid drive motor was built. Being a complete, generic FMU wrapper
-// here (rather than only wiring what today's ECU happens to send) keeps
-// this node reusable once 4WD/six_wheel are wired up on the ECU side --
-// no changes would be needed here for that.
+// (front/mid/rear) unconditionally -- six_wheel stays at the FMU's own
+// default-off value (never set here), so drive_torque_mid is simply
+// ignored by the FMU (no mid drive motor was built). Being a complete,
+// generic FMU wrapper here (rather than only wiring what today's ECU
+// happens to send) keeps this node reusable once six_wheel is wired up on
+// the ECU side -- no changes would be needed here for that.
+//
+// four_wheel_drive=1.0 IS set here (matching chrono_ros2_control's own
+// 4WD upgrade, same session) via fmu_client_open_begin()/_finish() rather
+// than the single-call fmu_client_open() -- four_wheel_drive is a
+// genuinely structural FMU parameter, read exactly once inside
+// native_vehicle_fmu's own fmi2ExitInitializationMode handler to decide
+// whether a front drive motor gets built at all. Setting it after a
+// single-call open() would be silently too late to have any effect --
+// exactly the bug found and fixed in chrono_ros2_control first (see
+// fmu_client.h's header comment for the full story).
 //
 // fmu_dir is a ROS2 node parameter (not a URDF hardware_parameter, since
 // this isn't a hardware_interface component) -- set via
@@ -52,9 +60,9 @@ public:
       throw std::invalid_argument("required parameter 'fmu_dir' not set");
     }
 
-    fmu_ = fmu_client_open(fmu_dir.c_str(), get_name());
+    fmu_ = fmu_client_open_begin(fmu_dir.c_str(), get_name());
     if (!fmu_) {
-      throw std::runtime_error("fmu_client_open('" + fmu_dir + "') failed");
+      throw std::runtime_error("fmu_client_open_begin('" + fmu_dir + "') failed");
     }
 
     bool ok = true;
@@ -64,6 +72,7 @@ public:
     ok &= find_vr_or_throw("steer_fl_deg_in", &vr_steer_fl_deg_in_);
     ok &= find_vr_or_throw("steer_fr_deg_in", &vr_steer_fr_deg_in_);
     ok &= find_vr_or_throw("independent_front_steer", &vr_independent_front_steer_);
+    ok &= find_vr_or_throw("four_wheel_drive", &vr_four_wheel_drive_);
     ok &= find_vr_or_throw("steer_FL_deg", &vr_steer_fl_deg_);
     ok &= find_vr_or_throw("steer_FR_deg", &vr_steer_fr_deg_);
     ok &= find_vr_or_throw("speed_mps", &vr_speed_mps_);
@@ -72,10 +81,18 @@ public:
     }
 
     // Same as chrono_fmu_system_interface's on_init(): take FL/FR steer
-    // angles independently instead of the old shared steer_deg, set once.
-    double one = 1.0;
-    if (!fmu_client_set_real(fmu_, &vr_independent_front_steer_, 1, &one)) {
-      throw std::runtime_error("fmu_client_set_real(independent_front_steer) failed");
+    // angles independently instead of the old shared steer_deg, and turn
+    // on four_wheel_drive -- both set once, still in initialization mode
+    // (see file header comment for why four_wheel_drive specifically must
+    // be set before open_finish()).
+    FmuValueReference vr_flags[2] = {vr_independent_front_steer_, vr_four_wheel_drive_};
+    double ones[2] = {1.0, 1.0};
+    if (!fmu_client_set_real(fmu_, vr_flags, 2, ones)) {
+      throw std::runtime_error("fmu_client_set_real(independent_front_steer, four_wheel_drive) failed");
+    }
+
+    if (!fmu_client_open_finish(fmu_)) {
+      throw std::runtime_error("fmu_client_open_finish('" + fmu_dir + "') failed");
     }
 
     vehicle_command_sub_ = create_subscription<VehicleCommand>(
@@ -141,6 +158,7 @@ private:
   FmuValueReference vr_steer_fl_deg_in_{};
   FmuValueReference vr_steer_fr_deg_in_{};
   FmuValueReference vr_independent_front_steer_{};
+  FmuValueReference vr_four_wheel_drive_{};
   FmuValueReference vr_steer_fl_deg_{};
   FmuValueReference vr_steer_fr_deg_{};
   FmuValueReference vr_speed_mps_{};

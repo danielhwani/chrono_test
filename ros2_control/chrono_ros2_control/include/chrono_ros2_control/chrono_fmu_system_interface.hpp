@@ -28,6 +28,17 @@
 // axle-level value goes into the FMU, and apply_differential() inside the
 // FMU still owns the L/R split -- this plugin never talks to individual
 // wheels, only axles, matching that established pattern.
+//
+// 4WD (rear-only -> 4WD upgrade, same session as the split-architecture
+// track) is now also done: on_init() sets four_wheel_drive=1.0 once, and
+// write() fans the SAME P-loop torque value (drive_torque_rear's own
+// computed value, not a second independent loop) into drive_torque_front
+// too -- exactly the "single traction reference fanned out internally"
+// design decided long before this plugin existed, since
+// ackermann_steering_controller never gave a separate front-traction
+// command in the first place. apply_differential() still separately owns
+// L/R split on each axle; this plugin still only ever talks in axle-level
+// quantities, now two axles instead of one.
 #ifndef CHRONO_ROS2_CONTROL__CHRONO_FMU_SYSTEM_INTERFACE_HPP_
 #define CHRONO_ROS2_CONTROL__CHRONO_FMU_SYSTEM_INTERFACE_HPP_
 
@@ -81,6 +92,8 @@ private:
   // rather than hardcoded, so a future modelDescription.xml VR renumbering
   // doesn't silently break this file.
   FmuValueReference vr_drive_torque_rear_{};
+  FmuValueReference vr_drive_torque_front_{};       // input: 4WD fan-out target (see write())
+  FmuValueReference vr_four_wheel_drive_{};         // input: set to 1.0 once, in on_init()
   FmuValueReference vr_steer_fl_deg_{};   // output: steer_FL_deg (actual, read back)
   FmuValueReference vr_steer_fr_deg_{};   // output: steer_FR_deg (actual, read back)
   FmuValueReference vr_speed_mps_{};

@@ -40,14 +40,25 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
   }
   const std::string fmu_dir = it->second;
 
-  fmu_ = fmu_client_open(fmu_dir.c_str(), info_.name.c_str());
+  // fmu_client_open_begin()/_finish() (not the single-call fmu_client_open())
+  // because four_wheel_drive is a genuinely structural FMU parameter --
+  // native_vehicle_fmu reads it exactly once, inside its own
+  // fmi2ExitInitializationMode handler, to decide whether a front drive
+  // motor gets built at all. Setting it after a single-call open() (which
+  // used to run Enter/ExitInitializationMode back to back) is silently too
+  // late -- discovered exactly that way: four_wheel_drive=1.0 set right
+  // after the old fmu_client_open() returned produced bit-identical output
+  // to four_wheel_drive=0.0. See fmu_client.h's updated header comment.
+  fmu_ = fmu_client_open_begin(fmu_dir.c_str(), info_.name.c_str());
   if (!fmu_) {
-    RCLCPP_ERROR(logger(), "fmu_client_open('%s') failed", fmu_dir.c_str());
+    RCLCPP_ERROR(logger(), "fmu_client_open_begin('%s') failed", fmu_dir.c_str());
     return hardware_interface::CallbackReturn::ERROR;
   }
 
   bool ok = true;
   ok &= find_vr_or_fail(fmu_, "drive_torque_rear", &vr_drive_torque_rear_);
+  ok &= find_vr_or_fail(fmu_, "drive_torque_front", &vr_drive_torque_front_);
+  ok &= find_vr_or_fail(fmu_, "four_wheel_drive", &vr_four_wheel_drive_);
   ok &= find_vr_or_fail(fmu_, "steer_FL_deg", &vr_steer_fl_deg_);
   ok &= find_vr_or_fail(fmu_, "steer_FR_deg", &vr_steer_fr_deg_);
   ok &= find_vr_or_fail(fmu_, "speed_mps", &vr_speed_mps_);
@@ -58,15 +69,21 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  // 4c: tell the FMU to take FL/FR steer angles independently (see header
-  // comment) instead of the old shared steer_deg -- set once here, never
-  // touched again, same "structural-ish toggle set once at init" pattern
-  // as four_wheel_drive/six_wheel (even though this one is actually
-  // checked every step() on the FMU side, not build-time).
-  FmuValueReference vr_flag = vr_independent_front_steer_;
-  double one = 1.0;
-  if (!fmu_client_set_real(fmu_, &vr_flag, 1, &one)) {
-    RCLCPP_ERROR(logger(), "fmu_client_set_real(independent_front_steer) failed");
+  // Both flags set here, still in initialization mode -- four_wheel_drive
+  // MUST be set before open_finish() (see above); independent_front_steer
+  // doesn't strictly need to be (it's checked every step(), not
+  // build-time), but setting it in the same place is simpler than
+  // splitting the two into "before finish" and "after finish" calls for no
+  // real benefit.
+  FmuValueReference vr_flags[2] = {vr_independent_front_steer_, vr_four_wheel_drive_};
+  double ones[2] = {1.0, 1.0};
+  if (!fmu_client_set_real(fmu_, vr_flags, 2, ones)) {
+    RCLCPP_ERROR(logger(), "fmu_client_set_real(independent_front_steer, four_wheel_drive) failed");
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  if (!fmu_client_open_finish(fmu_)) {
+    RCLCPP_ERROR(logger(), "fmu_client_open_finish('%s') failed", fmu_dir.c_str());
     return hardware_interface::CallbackReturn::ERROR;
   }
 
@@ -193,20 +210,39 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
   // safely above the observed noise floor so real commands (normally
   // several rad/s) are unaffected, while near-zero noise now yields zero
   // torque instead of feeding back on itself.
-  double drive_torque_rear = 0.0;
+  double total_drive_torque = 0.0;
   if (std::abs(vel_error) >= kVelocityDeadband) {
-    drive_torque_rear = kVelocityKp * vel_error;
+    total_drive_torque = kVelocityKp * vel_error;
   }
-  if (drive_torque_rear > kMaxDriveTorqueRear) {
-    drive_torque_rear = kMaxDriveTorqueRear;
-  } else if (drive_torque_rear < -kMaxDriveTorqueRear) {
-    drive_torque_rear = -kMaxDriveTorqueRear;
+  if (total_drive_torque > kMaxDriveTorqueRear) {
+    total_drive_torque = kMaxDriveTorqueRear;
+  } else if (total_drive_torque < -kMaxDriveTorqueRear) {
+    total_drive_torque = -kMaxDriveTorqueRear;
   }
 
-  FmuValueReference vrs[3] = {vr_steer_fl_deg_in_, vr_steer_fr_deg_in_, vr_drive_torque_rear_};
-  double values[3] = {steer_fl_deg, steer_fr_deg, drive_torque_rear};
-  if (!fmu_client_set_real(fmu_, vrs, 3, values)) {
-    RCLCPP_ERROR(logger(), "fmu_client_set_real(steer_fl/fr_deg_in, drive_torque_rear) failed");
+  // 4WD bug found and fixed (same session): the FIRST version of this sent
+  // the full total_drive_torque to BOTH axles unchanged, which doubles the
+  // effective torque-per-unit-error a real 2-axle vehicle experiences
+  // compared to the 1-axle case kVelocityKp/kVelocityDeadband were tuned
+  // and validated against -- equivalent to silently doubling Kp. That
+  // re-triggered (worse than before) the exact step-7 noise-resonance
+  // runaway from a standstill, live-tested and confirmed identically on
+  // BOTH the in-process and split versions (not an architecture-specific
+  // bug). A real 4WD driveline splits a given torque demand across axles
+  // (transfer case), it doesn't duplicate it -- dividing here instead of
+  // duplicating keeps the total commanded tractive effort, and therefore
+  // the closed loop's effective gain, identical to the already-validated
+  // 2WD case regardless of how many axles are actually driven.
+  const double drive_torque = total_drive_torque / 2.0;
+
+  // apply_differential() still separately handles L/R split on each axle;
+  // this plugin only ever talks in axle-level quantities.
+  FmuValueReference vrs[4] = {
+    vr_steer_fl_deg_in_, vr_steer_fr_deg_in_, vr_drive_torque_rear_, vr_drive_torque_front_};
+  double values[4] = {steer_fl_deg, steer_fr_deg, drive_torque, drive_torque};
+  if (!fmu_client_set_real(fmu_, vrs, 4, values)) {
+    RCLCPP_ERROR(
+      logger(), "fmu_client_set_real(steer_fl/fr_deg_in, drive_torque_rear/front) failed");
     return hardware_interface::return_type::ERROR;
   }
 

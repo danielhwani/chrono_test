@@ -931,6 +931,27 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ros2 launch chrono_split_
 
 **개선하고 싶어지면 고려할 것** (지금은 안 함): 메시지에 타임스탬프/시퀀스 번호를 넣어 중복 적용 방지, 동역학 노드를 자체 타이머 대신 "새 `VehicleCommand` 도착 시에만" 스텝하는 이벤트 기반으로 전환(다만 FMU가 일정한 dt를 기대한다는 제약과 씨름해야 함).
 
+### 후륜구동 → 4WD 업그레이드 — 두 버전 동시 적용, 그 과정에서 발견한 두 가지 진짜 버그
+
+인프로세스 버전(`chrono_ros2_control`)과 스플릿 버전(`chrono_split_*`) 둘 다 뒷바퀴 전용 구동에서 4WD로 업그레이드. "두 버전을 병행 개발"하기로 한 원칙에 따라 동시에 진행 — 한쪽만 바꾸면 교차검증 기준이 깨지기 때문.
+
+**발견한 버그 1 — `fmu_client_open()`은 구조적 파라미터를 설정할 방법이 없었음**: `four_wheel_drive`를 `on_init()`에서 `fmu_client_open()` 호출 직후 `SetReal`로 켰는데, 벤치 테스트 결과가 **2WD 때와 소수점까지 완전히 동일**하게 나옴 — 즉 4WD가 전혀 적용이 안 되고 있었음. 원인을 파보니, FMU(`vehicle_native.cpp`)에서 `four_wheel_drive_in`은 `build()` 안에서 **딱 한 번**만 읽혀서 앞바퀴 구동 모터를 만들지 결정하는데, `build()`는 `fmi2ExitInitializationMode` 콜백 안에서 실행됨. 그런데 `fmu_client_open()`은 `SetupExperiment→EnterInitializationMode→ExitInitializationMode`를 **연달아 한 번에** 실행하고 반환해서, 호출자가 그 사이에 `SetReal`을 끼워넣을 방법이 아예 없었음 — `on_init()`이 `open()`에서 돌아온 뒤 아무리 `SetReal`을 불러도 이미 `build()`가 끝난 뒤라 늦음.
+
+**수정**: `fmu_client_open()`을 `fmu_client_open_begin()`(`EnterInitializationMode`까지) + `fmu_client_open_finish()`(`ExitInitializationMode`)로 2단계 API로 분리. 기존 `fmu_client_open()`은 이 둘을 그대로 이어붙인 편의 함수로 남겨서 `fmu_driver`/`fmu_client_cpp_check`(구조적 파라미터를 안 쓰는 기존 호출자)는 전혀 안 건드림 — 재빌드 후 두 프로그램 다 기존 검증값과 소수점까지 동일하게 재현됨(`chassis_x=6.189703`/`speed_mps=4.122292` 등). `ChronoFmuSystemInterface::on_init()`과 `chrono_split_dynamics_node`의 생성자 둘 다 `open_begin()` → VR 조회 → `four_wheel_drive`/`independent_front_steer` `SetReal` → `open_finish()` 순서로 수정. 이 순서로 하니 인프로세스 버전 벤치 테스트에서 `3.757383`(2WD) → `4.319235`(4WD, 진짜로 다른 값)로 수치가 명확히 달라짐 — 4WD가 비로소 실제로 적용됨을 확인.
+
+**발견한 버그 2 — 같은 토크를 양쪽 축에 복사하면 폭주함**: 4WD를 "P 루프가 계산한 토크값을 앞/뒤 축에 그대로 복사"하는 방식으로 구현했는데, 실제 명령 없이 정지 상태로 몇 초만 둬도 속도가 **180 rad/s대까지 폭주**함. 처음엔 스플릿 버전만의 타이밍 문제(토픽 브릿지 지연/중복 스텝)로 의심했는데, **인프로세스 버전도 똑같이 폭주**하는 걸 확인 — 즉 구조 분리와 무관한, 4WD 로직 자체의 진짜 버그였음.
+
+**원인**: 같은 속도 오차에 대해 계산된 토크를 두 축에 **각각 그대로** 보내면, 차량이 실제로 받는 총 토크가 2배가 됨 — 이건 사실상 `Kp`를 몰래 2배로 올린 것과 동일한 효과. `Kp=80`/데드밴드`=0.1`은 축 1개(2WD) 기준으로 튜닝·검증된 값이라, 축 2개에 풀로 나가는 순간 그 안정성 마진이 깨지면서 step 7 때 봤던 "정지 상태 노이즈 공진" 폭주가 훨씬 심하게 재현됨.
+
+**수정**: 계산된 토크를 두 축에 복사하는 대신 **2로 나눠서** 분배(`drive_torque = total_drive_torque / 2.0`) — 실제 4WD 차량도 트랜스퍼 케이스가 엔진 토크 요구량을 각 축에 나눠주는 거지 복제하지 않음. 이렇게 하면 축 개수와 무관하게 총 견인력(= 폐루프 실효 게인)이 2WD 때와 동일하게 유지됨.
+
+**검증**: 인프로세스·스플릿 둘 다 수정 후 재확인.
+- 정지 상태(명령 없음): 인프로세스 `0.017 rad/s`, 스플릿 `0.0065 rad/s` — 둘 다 노이즈 범위 내, 폭주 없음
+- 실제 명령(`linear.x=1.0, angular.z=0.3`): 인프로세스 `2.75→2.18→2.05→2.10→2.10`, 스플릿 `3.00→2.49→2.09→2.14` — 둘 다 안정적으로 수렴, 서로 비슷한 범위(완전히 같은 수치는 브릿지 타이밍 차이로 기대하지 않음, 이전 절 참고)
+- 벤치 테스트(`chrono_fmu_system_interface_check`, `fmu_client_cpp_check`) 둘 다 재확인 — `fmu_client_cpp_check`는 기존 검증값과 완전히 동일(구조적 파라미터를 안 쓰는 호출자라 API 변경의 영향이 없어야 정상이고, 실제로 그렇게 나옴), `chrono_fmu_system_interface_check`는 4WD+토크분배로 2WD와는 다르지만(축 분배가 달라졌으니 당연) 합리적인 범위(`3.637180`)로 안정적으로 수렴
+
+두 버그 다 진단용 임시 `fprintf` 로그로 근본 원인까지 추적한 뒤 코드에서 제거 — 커밋에는 안 남김, 발견 과정과 근거만 여기 기록.
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.

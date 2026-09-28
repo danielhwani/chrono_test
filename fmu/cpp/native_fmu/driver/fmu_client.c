@@ -65,6 +65,7 @@ struct FmuClient {
     char model_id[128];
     fmi2Component component;
 
+    fmi2ExitInitializationMode_t fmi2ExitInitializationMode;
     fmi2FreeInstance_t fmi2FreeInstance;
     fmi2SetReal_t fmi2SetReal;
     fmi2GetReal_t fmi2GetReal;
@@ -140,7 +141,7 @@ static void fmu_logger(fmi2ComponentEnvironment env, fmi2String instanceName, fm
 static void* fmu_alloc(size_t nobj, size_t size) { return calloc(nobj, size); }
 static void fmu_free(void* p) { free(p); }
 
-FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name) {
+FmuClient* fmu_client_open_begin(const char* fmu_dir, const char* instance_name) {
     char xml_path[1024];
     snprintf(xml_path, sizeof(xml_path), "%s/modelDescription.xml", fmu_dir);
     char* xml = read_whole_file(xml_path);
@@ -178,8 +179,6 @@ FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name) {
     fmi2SetupExperiment_t fmi2SetupExperiment = (fmi2SetupExperiment_t)xdlsym(handle, "fmi2SetupExperiment");
     fmi2EnterInitializationMode_t fmi2EnterInitializationMode =
         (fmi2EnterInitializationMode_t)xdlsym(handle, "fmi2EnterInitializationMode");
-    fmi2ExitInitializationMode_t fmi2ExitInitializationMode =
-        (fmi2ExitInitializationMode_t)xdlsym(handle, "fmi2ExitInitializationMode");
 
     fmi2CallbackFunctions callbacks = {fmu_logger, fmu_alloc, fmu_free, NULL, NULL};
     fmi2Component component = fmi2Instantiate(instance_name ? instance_name : "fmu_client_instance",
@@ -192,7 +191,6 @@ FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name) {
     }
     fmi2SetupExperiment(component, 0, 0.0, 0.0, 0, 0.0);
     fmi2EnterInitializationMode(component);
-    fmi2ExitInitializationMode(component);
 
     /* explicit casts on this and read_whole_file()'s malloc() are for C++
      * compatibility (implicit void* conversion is a C-only convenience) --
@@ -206,11 +204,35 @@ FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name) {
     strncpy(client->model_id, model_id, sizeof(client->model_id) - 1);
     client->model_id[sizeof(client->model_id) - 1] = '\0';
     client->component = component;
+    /* Resolved here (not lazily) so fmu_client_set_real() already works on
+     * a client still in initialization mode -- exactly the seam
+     * fmu_client_open_begin()/_finish() exists to provide, for structural
+     * FMU parameters (e.g. native_vehicle_fmu's four_wheel_drive/six_wheel)
+     * that a model only reads once, inside its fmi2ExitInitializationMode
+     * handler -- setting them after a single-shot fmu_client_open() (which
+     * used to run Enter/ExitInitializationMode back to back with no seam
+     * in between) was silently too late to have any effect. */
+    client->fmi2ExitInitializationMode =
+        (fmi2ExitInitializationMode_t)xdlsym(handle, "fmi2ExitInitializationMode");
     client->fmi2FreeInstance = (fmi2FreeInstance_t)xdlsym(handle, "fmi2FreeInstance");
     client->fmi2SetReal = (fmi2SetReal_t)xdlsym(handle, "fmi2SetReal");
     client->fmi2GetReal = (fmi2GetReal_t)xdlsym(handle, "fmi2GetReal");
     client->fmi2DoStep = (fmi2DoStep_t)xdlsym(handle, "fmi2DoStep");
     client->fmi2Terminate = (fmi2Terminate_t)xdlsym(handle, "fmi2Terminate");
+    return client;
+}
+
+int fmu_client_open_finish(FmuClient* client) {
+    return client->fmi2ExitInitializationMode(client->component) == fmi2OK;
+}
+
+FmuClient* fmu_client_open(const char* fmu_dir, const char* instance_name) {
+    FmuClient* client = fmu_client_open_begin(fmu_dir, instance_name);
+    if (!client) return NULL;
+    if (!fmu_client_open_finish(client)) {
+        fmu_client_close(client);
+        return NULL;
+    }
     return client;
 }
 
