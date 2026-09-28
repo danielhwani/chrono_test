@@ -984,12 +984,18 @@ FMU는 `six_wheel`/`drive_torque_mid`를 이미 지원했지만(ros2_control 작
 
 **launch 파일**: 두 트랙 다 `six_wheel` launch argument(기본 `"false"`) 추가, `OpaqueFunction` 패턴으로 런타임 값에 따라 URDF/컨트롤러 YAML을 고름(모듈 레벨 순수 Python은 launch argument 런타임 값을 볼 수 없어서). 스플릿 쪽은 추가로 `six_wheel` 값을 `chrono_split_ecu`/`chrono_split_dynamics_node` 두 노드의 ROS 파라미터로도 전달 — 인프로세스는 URDF 파일 하나만 바꾸면 끝이지만, 스플릿은 두 개의 독립 프로세스에 같은 값을 따로 전달해야 함.
 
-**실터미널 검증, 두 트랙 다**: idle 안정성(러너웨이 없음, 6개 조인트 정상 export) + 실제 명령(`linear.x=1.0, angular.z=0.3`) 수렴 테스트. 인프로세스 6x6: 6개 바퀴 전부 `0.351 rad/s`로 안정 수렴. 스플릿 6x6: 6개 바퀴 전부 `0.310 rad/s`로 안정 수렴(ECU 루프 특성상 인프로세스와 정확히 같은 값은 아니지만 둘 다 안정적으로 단일 값에 수렴 — 예상된 패턴).
+**실터미널 검증, 두 트랙 다**: idle 안정성(러너웨이 없음, 6개 조인트 정상 export) + 실제 명령(`linear.x=1.0, angular.z=0.3`) 응답 확인. 인프로세스/스플릿 둘 다 러너웨이 없이 안정적으로 움직임(초기 6초 스냅샷 기준 인프로세스 `0.351 rad/s`, 스플릿 `0.310 rad/s`) — 단, 이 값들은 아래에서 밝혀졌듯 진짜 정상상태가 아니라 여전히 느리게 움직이던 중간값이었음 (사용자가 본인 터미널에서 더 오래 관찰하며 발견).
 
 ```bash
 ros2 launch chrono_ros2_control/launch/chrono_vehicle_control.launch.py six_wheel:=true
 ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_control.launch.py six_wheel:=true
 ```
+
+**알려진 특성: 무거운 6x6 + 급회전 조합에서 가속이 매우 느림** — 사용자가 위 명령(`linear.x=1.0, angular.z=0.3`)을 자신의 터미널에서 15초 넘게 관찰하다가 발견. 초반 몇 초는 값이 올라가는 것처럼 보였지만(`0.351`), 55초 뒤엔 오히려 `0.015` 근처로 떨어져 있었고, 1초 간격으로 15개 샘플을 찍어봐도 `0.01-0.035 rad/s` 사이에서만 맴돌 뿐 목표치 근처에도 못 감. `angular.z=0.0`(직진)으로 똑같이 재현했더니 `3.01-3.15 rad/s`(=`linear.x=1.0/wheel_radius=0.32`의 정확한 목표치)로 즉시, 안정적으로 수렴 — 원인이 회전 자체로 좁혀짐.
+
+원인: `wheelbase=3.4`(6x6)에서 `angular.z=0.3`은 조향각 약 53°(FR)/40°(FL)에 달하는 급회전 수준(Ackermann 기하상 정상 계산 결과, 버그 아님)인데, 토크 클램프(`kMaxDriveTorqueRear=800`, 축 개수와 무관하게 **총합**이 이 값으로 고정 — "복제 대신 분배" 설계 그대로)는 4WD 때와 동일하게 유지되어 있음. 4륜차보다 훨씬 무거운 2600kg 섀시가 급회전 저항까지 이겨내며 가속하기엔 기존 토크 한도가 부족한 상황 — **소프트웨어 버그가 아니라 물리적으로 타당한 현상**(무거운 트럭이 기존 동력으로 급선회하면 느리다).
+
+**처리 방향 (사용자 결정)**: 코드/튜닝값은 건드리지 않고 이 특성만 기록해두기로 함 — `kVelocityKp`/`kMaxDriveTorqueRear`는 원래 2WD 기준으로 경험적으로 튜닝된 값이고 4WD 때도 그대로 재사용했던 전례가 있어서, 6x6 전용으로 올리려면 별도의 실제 타당성 검증(바퀴 슬립 재발 여부 등)이 먼저 필요함 — 지금 스코프 밖.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
