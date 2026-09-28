@@ -1,0 +1,303 @@
+<?xml version="1.0"?>
+<robot name="chrono_vehicle_remote_6x6">
+
+  <!--
+    6x6 sibling of chrono_vehicle_remote.urdf (분산 버전/distributed version,
+    4-wheel/2-axle) — that file is untouched. Same
+    ChronoRemoteFmuSystemInterface plugin, plus one extra
+    <param name="six_wheel">true</param> that tells the plugin to fan the
+    traction P-loop's torque across 3 axles instead of 2 (its own
+    axle-divisor math only — this plugin has no FMU access, so it cannot
+    set native_vehicle_fmu's own six_wheel structural flag; that lives on
+    PC2's chrono_split_dynamics_node as its own six_wheel ROS2 parameter,
+    which must be set to match). Default (param absent, as in
+    chrono_vehicle_remote.urdf) keeps every existing 4-wheel/2-axle
+    behavior bit-exact — purely additive.
+
+    Geometry matches chrono_vehicle_6x6.urdf exactly (see its own comment
+    for the underlying native_vehicle_fmu constants) — all three tracks'
+    6x6 URDFs must describe the same physical vehicle.
+  -->
+
+  <material name="chassis_red">
+    <color rgba="0.72 0.08 0.12 1.0"/>
+  </material>
+  <material name="wheel_dark">
+    <color rgba="0.13 0.13 0.15 1.0"/>
+  </material>
+  <!-- Small radial stripe on each wheel's rolling-surface plane, purely so
+       rotation is actually visible in RViz — see chrono_vehicle.urdf's
+       matching comment. -->
+  <material name="wheel_marker">
+    <color rgba="0.85 0.85 0.9 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 1.19" rpy="0 0 0"/>
+      <geometry>
+        <box size="4.4 1.8 0.5"/>
+      </geometry>
+      <material name="chassis_red"/>
+    </visual>
+  </link>
+
+  <link name="front_left_knuckle"/>
+  <link name="front_right_knuckle"/>
+
+  <link name="front_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="front_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="mid_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="mid_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="rear_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+  <link name="rear_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.32" length="0.22"/>
+      </geometry>
+      <material name="wheel_dark"/>
+    </visual>
+  </link>
+
+  <joint name="front_left_steering_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="front_left_knuckle"/>
+    <origin xyz="1.7 0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6" upper="0.6" effort="100" velocity="10"/>
+  </joint>
+  <joint name="front_right_steering_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="front_right_knuckle"/>
+    <origin xyz="1.7 -0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6" upper="0.6" effort="100" velocity="10"/>
+  </joint>
+
+  <!-- 4WD front spin: state-only, no command_interface — see
+       chrono_vehicle.urdf's matching joint comment. -->
+  <joint name="front_left_wheel_joint" type="continuous">
+    <parent link="front_left_knuckle"/>
+    <child link="front_left_wheel"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <joint name="front_right_wheel_joint" type="continuous">
+    <parent link="front_right_knuckle"/>
+    <child link="front_right_wheel"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- Mid axle: driven, no steering — straight off base_link, same as
+       rear. State-only, no command_interface, same reasoning as front. -->
+  <joint name="mid_left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="mid_left_wheel"/>
+    <origin xyz="0 0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <joint name="mid_right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="mid_right_wheel"/>
+    <origin xyz="0 -0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <joint name="rear_left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_left_wheel"/>
+    <origin xyz="-1.7 0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <joint name="rear_right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_right_wheel"/>
+    <origin xyz="-1.7 -0.75 0.32" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+
+  <!-- Separate link + fixed joint per wheel for the rotation-
+       visibility marker (see wheel_marker material comment above) —
+       NOT a second <visual> inside the wheel link itself: RViz/Ogre
+       was observed to only honor the FIRST visual's material for a
+       link with multiple <visual> elements (marker rendered solid
+       black, matching wheel_dark, instead of wheel_marker's silver —
+       confirmed live, rotation itself was already correct). A
+       separate link with its own single <visual> sidesteps that
+       entirely; fixed joints need no ros2_control entry and are
+       published as static TF automatically. -->
+  <link name="front_left_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="front_right_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="mid_left_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="mid_right_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="rear_left_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+  <link name="rear_right_wheel_marker">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.015 0.04"/>
+      </geometry>
+      <material name="wheel_marker"/>
+    </visual>
+  </link>
+
+  <joint name="front_left_wheel_marker_joint" type="fixed">
+    <parent link="front_left_wheel"/>
+    <child link="front_left_wheel_marker"/>
+    <origin xyz="0.15 0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="front_right_wheel_marker_joint" type="fixed">
+    <parent link="front_right_wheel"/>
+    <child link="front_right_wheel_marker"/>
+    <origin xyz="0.15 -0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="mid_left_wheel_marker_joint" type="fixed">
+    <parent link="mid_left_wheel"/>
+    <child link="mid_left_wheel_marker"/>
+    <origin xyz="0.15 0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="mid_right_wheel_marker_joint" type="fixed">
+    <parent link="mid_right_wheel"/>
+    <child link="mid_right_wheel_marker"/>
+    <origin xyz="0.15 -0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="rear_left_wheel_marker_joint" type="fixed">
+    <parent link="rear_left_wheel"/>
+    <child link="rear_left_wheel_marker"/>
+    <origin xyz="0.15 0.115 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="rear_right_wheel_marker_joint" type="fixed">
+    <parent link="rear_right_wheel"/>
+    <child link="rear_right_wheel_marker"/>
+    <origin xyz="0.15 -0.115 0" rpy="0 0 0"/>
+  </joint>
+
+  <ros2_control name="ChronoVehicleSystem" type="system">
+    <hardware>
+      <plugin>chrono_remote_fmu_hw_interface/ChronoRemoteFmuSystemInterface</plugin>
+      <param name="six_wheel">true</param>
+    </hardware>
+
+    <joint name="front_left_steering_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="front_right_steering_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+    </joint>
+    <!-- position state_interface on every wheel joint below is a
+         dead-reckoned, visualization-only value — see
+         chrono_vehicle.urdf's matching comment. -->
+    <joint name="rear_left_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="rear_right_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="front_left_wheel_joint">
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="front_right_wheel_joint">
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="mid_left_wheel_joint">
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+    <joint name="mid_right_wheel_joint">
+      <state_interface name="velocity"/>
+      <state_interface name="position"/>
+    </joint>
+  </ros2_control>
+
+</robot>
