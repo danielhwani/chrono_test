@@ -64,9 +64,9 @@ struct NamedInterfaces {
 static void run_scenario(const char* fmu_dir, const char* label, bool six_wheel, bool four_wheel_drive,
                           double steer_deg, double torque_rear, double torque_mid, double torque_front,
                           double sim_time, double dt) {
-    FmuClient* client = fmu_client_open(fmu_dir, "fmu_client_cpp_check");
+    FmuClient* client = fmu_client_open_begin(fmu_dir, "fmu_client_cpp_check");
     if (!client) {
-        std::fprintf(stderr, "fmu_client_open failed for %s\n", fmu_dir);
+        std::fprintf(stderr, "fmu_client_open_begin failed for %s\n", fmu_dir);
         std::exit(1);
     }
     std::printf("=== %s ===\n", label);
@@ -80,8 +80,19 @@ static void run_scenario(const char* fmu_dir, const char* label, bool six_wheel,
     commands.add(client, "drive_torque_front", torque_front);
     commands.add(client, "six_wheel", six_wheel ? 1.0 : 0.0);
     commands.add(client, "four_wheel_drive", four_wheel_drive ? 1.0 : 0.0);
-    /* six_wheel/four_wheel_drive are structural -- set once, before stepping starts */
+    /* six_wheel/four_wheel_drive are structural -- must land before
+     * open_finish() (fmi2ExitInitializationMode) runs, or they're silently
+     * too late (see fmu_client.h's fmu_client_open() doc comment for the
+     * full story) -- this is exactly the bug that made this scenario's
+     * "6x6" label incorrect for a long time (still using the single-call
+     * fmu_client_open() until this fix): it was actually running as a
+     * plain 4-wheel/2WD car the whole time, silently ignoring
+     * drive_torque_mid. */
     fmu_client_set_real(client, commands.vrs.data(), commands.vrs.size(), commands.values.data());
+    if (!fmu_client_open_finish(client)) {
+        std::fprintf(stderr, "fmu_client_open_finish failed for %s\n", fmu_dir);
+        std::exit(1);
+    }
 
     /* state_interfaces-equivalent: read back each step */
     NamedInterfaces states;
