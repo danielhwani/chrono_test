@@ -173,6 +173,27 @@ private:
   // near-zero). Set safely above the observed noise floor; real velocity
   // commands (normally several rad/s) are far above this and unaffected.
   static constexpr double kVelocityDeadband = 0.1;
+
+  // Low-pass-filtered vel_measured -- added after the 6x6 sharp-turn
+  // closed-loop oscillation investigation (see README): gain-lowering
+  // alone (80->20->5) shrank the oscillation's amplitude proportionally
+  // but never eliminated the real-wheel sign-flipping itself, while a
+  // filter on the feedback (at the ORIGINAL kVelocityKp=80, gain-lowering
+  // was tried combined with the filter too and made things WORSE --
+  // amplitude stopped decaying toward zero and just hovered near a fixed
+  // nonzero level instead) let the same oscillation genuinely damp out
+  // within ~8-10s of a step change instead of persisting indefinitely.
+  // Unlike a D-term (rejected earlier for amplifying noise -- see the
+  // step-7 deadband comment above), a low-pass filter suppresses
+  // high-frequency noise in the feedback signal before it reaches the P
+  // computation, rather than differentiating (and thus amplifying) it.
+  // Simple exponential moving average:
+  // filtered += kVelFilterAlpha * (raw - filtered) each write(). This
+  // does change convergence speed slightly even for previously-bit-exact
+  // scenarios (e.g. the 4-wheel/6x6 straight-line bench numbers) --
+  // expected and accepted, not a bug; see README for the exact deltas.
+  double vel_measured_filtered_ = 0.0;
+  static constexpr double kVelFilterAlpha = 0.01;
 };
 
 }  // namespace chrono_ros2_control

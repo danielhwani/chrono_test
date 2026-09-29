@@ -180,7 +180,10 @@ hardware_interface::return_type ChronoSupervisoryFmuSystemInterface::write(
     }
   }
   const double vel_cmd = (vel_cmd_count > 0 ? vel_cmd_sum / vel_cmd_count : 0.0);
-  const double vel_error = vel_cmd - vel_measured;
+  // Filter vel_measured before computing error -- see kVelFilterAlpha's
+  // header comment for why (6x6 sharp-turn closed-loop oscillation fix).
+  vel_measured_filtered_ += kVelFilterAlpha * (vel_measured - vel_measured_filtered_);
+  const double vel_error = vel_cmd - vel_measured_filtered_;
   double total_drive_torque = 0.0;
   if (std::abs(vel_error) >= kVelocityDeadband) {
     total_drive_torque = kVelocityKp * vel_error;

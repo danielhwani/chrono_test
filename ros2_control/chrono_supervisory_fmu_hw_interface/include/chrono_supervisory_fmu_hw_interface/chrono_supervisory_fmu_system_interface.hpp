@@ -110,6 +110,20 @@ private:
   static constexpr double kVelocityKp = 80.0;
   static constexpr double kMaxDriveTorqueRear = 800.0;
   static constexpr double kVelocityDeadband = 0.1;
+
+  // Low-pass-filtered vel_measured -- ported from ChronoFmuSystemInterface's
+  // identical fix, added after a 6x6 sharp-turn closed-loop oscillation
+  // investigation found gain-lowering alone (80->20->5) shrank the
+  // oscillation's amplitude but never eliminated the real-wheel
+  // sign-flipping itself, while filtering let it genuinely damp out
+  // within ~8-10s (see README). Unlike a D-term (rejected earlier for
+  // amplifying noise), a low-pass filter suppresses high-frequency noise
+  // in the feedback before it reaches the P computation. Simple
+  // exponential moving average, applied in write() only -- read()'s
+  // exported joint state still reports the raw (unfiltered) value, same
+  // as every other track; this is purely an internal control-loop detail.
+  double vel_measured_filtered_ = 0.0;
+  static constexpr double kVelFilterAlpha = 0.01;
 };
 
 }  // namespace chrono_supervisory_fmu_hw_interface

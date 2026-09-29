@@ -43,6 +43,11 @@
 //     computed torque also goes to drive_torque_mid_nm, and the total is
 //     divided by 3 axles instead of 2 -- same divide-not-duplicate
 //     reasoning as 4WD above.
+//   - vel_measured is low-pass filtered (kVelFilterAlpha) before entering
+//     the P computation -- ported from ChronoFmuSystemInterface's
+//     identical fix, added after a 6x6 sharp-turn closed-loop oscillation
+//     investigation found gain-lowering alone shrank but never eliminated
+//     it, while filtering let it genuinely damp out (see README).
 #include <cmath>
 
 #include <rclcpp/rclcpp.hpp>
@@ -69,6 +74,13 @@ constexpr double kVelocityKp = 80.0;
 constexpr double kMaxDriveTorqueRear = 800.0;
 // Step 7's deadband fix, unchanged from chrono_fmu_system_interface.hpp.
 constexpr double kVelocityDeadband = 0.1;
+// Low-pass filter on vel_measured before it enters the P computation --
+// ported from ChronoFmuSystemInterface's identical fix (6x6 sharp-turn
+// closed-loop oscillation investigation, see README). Unfiltered
+// vel_measured is still what gets reported back as EcuStatus's
+// traction_vel_rad_s (see tick()) -- the filter is purely an internal
+// control-loop detail, not a change to what's externally observable.
+constexpr double kVelFilterAlpha = 0.01;
 }  // namespace
 
 class ChronoSplitEcuNode : public rclcpp::Node
@@ -110,7 +122,8 @@ private:
     // read() (the FMU has no true per-wheel omega output), then the same
     // P loop + deadband as its write().
     const double vel_measured = latest_vehicle_status_.speed_mps / kWheelRadius;
-    const double vel_error = latest_ecu_command_.traction_vel_rad_s - vel_measured;
+    vel_measured_filtered_ += kVelFilterAlpha * (vel_measured - vel_measured_filtered_);
+    const double vel_error = latest_ecu_command_.traction_vel_rad_s - vel_measured_filtered_;
     double total_drive_torque = 0.0;
     if (std::abs(vel_error) >= kVelocityDeadband) {
       total_drive_torque = kVelocityKp * vel_error;
@@ -150,6 +163,7 @@ private:
   EcuCommand latest_ecu_command_;
   VehicleStatus latest_vehicle_status_;
   bool six_wheel_ = false;
+  double vel_measured_filtered_ = 0.0;
 };
 
 int main(int argc, char ** argv)

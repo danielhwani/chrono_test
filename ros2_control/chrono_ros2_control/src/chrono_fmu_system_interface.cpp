@@ -260,7 +260,10 @@ hardware_interface::return_type ChronoFmuSystemInterface::write(
     }
   }
   const double vel_cmd = (vel_cmd_count > 0 ? vel_cmd_sum / vel_cmd_count : 0.0);
-  const double vel_error = vel_cmd - vel_measured;
+  // Filter vel_measured before computing error -- see kVelFilterAlpha's
+  // header comment for why (6x6 sharp-turn closed-loop oscillation fix).
+  vel_measured_filtered_ += kVelFilterAlpha * (vel_measured - vel_measured_filtered_);
+  const double vel_error = vel_cmd - vel_measured_filtered_;
   // Step 7 finding, root-caused via an A/B test (forcing drive_torque_rear
   // to exactly 0 and watching vel_measured stay bounded at ~0.01-0.07 rad/s
   // -- normal suspension settling noise -- vs. the unmodified P loop
