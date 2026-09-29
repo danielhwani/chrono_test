@@ -997,6 +997,8 @@ ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_con
 
 **처리 방향 (사용자 결정)**: 코드/튜닝값은 건드리지 않고 이 특성만 기록해두기로 함 — `kVelocityKp`/`kMaxDriveTorqueRear`는 원래 2WD 기준으로 경험적으로 튜닝된 값이고 4WD 때도 그대로 재사용했던 전례가 있어서, 6x6 전용으로 올리려면 별도의 실제 타당성 검증(바퀴 슬립 재발 여부 등)이 먼저 필요함 — 지금 스코프 밖.
 
+**분산 버전에서 회전각을 단계별로 늘려가며 재확인(2026-09-29)**: `angular.z` 0.08→0.15→0.3으로 늘려가며 6x6 분산 버전에서 수렴 속도를 봤더니 `~1.4 rad/s → ~0.25-0.35 rad/s → 거의 정지`로, 회전각이 커질수록 감속이 뚜렷하게 비선형적으로 심해짐 — 직진 목표(~3.1 rad/s) 대비 꾸준히 줄어드는 패턴으로, 어느 트랙에서든(인프로세스/스플릿/분산) 같은 FMU/토크 상수를 쓰니 동일하게 나타나는 게 정상. 조향(FL/FR 독립각)은 세 회전각 전부 안정적으로 정상 계산됨 — 이 특성은 트랙 무관하게 재현되는, 순수 물리/토크 한도 문제임을 재확인.
+
 ### RViz 시각화 — 바퀴가 안 보이던 문제, 그리고 재질 렌더링 함정
 
 6x6을 RViz로 처음 열어봤을 때(`rviz2 -d chrono_vehicle.rviz`, 실제 `controller_manager`가 이미 돌아가는 상태에서) 섀시는 보이는데 **바퀴 6개가 전부 "No transform from [wheel] to [base_link]"** 에러로 안 보였음. `check_urdf`로는 운동학적 트리가 완전히 정상(`base_link`의 6개 자식까지 다 파싱됨)이라 URDF 구조 문제가 아니었고, `<ros2_control>` 쪽 원인으로 좁혀짐: 바퀴 조인트는 (FMU가 바퀴 회전각을 추적 안 해서) `<state_interface name="velocity"/>`만 선언돼 있었는데, `robot_state_publisher`는 continuous 조인트라도 TF 계산에 숫자 **position**이 필요함 — 그래서 `/joint_states`의 position이 6개 바퀴 전부 `.nan`이었고 TF를 못 만든 것. 조향 조인트는 position을 실제로 가지고 있어서 정상 렌더링됐음. **지금까지 한 번도 실제 FMU 구동 로봇을 RViz로 본 적이 없어서**(이전 검증은 전부 `joint_state_publisher_gui`의 가짜 슬라이더로 했음, 항상 position을 채워줌) 처음 드러난 갭 — 6x6 전용 문제가 아니라 4WD 때부터 있던 문제였음.
