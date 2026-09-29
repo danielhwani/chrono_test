@@ -94,38 +94,6 @@ hardware_interface::CallbackReturn ChronoFmuSystemInterface::on_init(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  // Optional driveshaft compliance (native_vehicle_fmu's driveshaft_compliance/
-  // driveshaft_k/driveshaft_c, all structural -> must be set before
-  // open_finish()). Params absent (every existing URDF) = nothing sent, not
-  // even a VR lookup, so behavior and FMU-version compatibility are exactly
-  // as before. driveshaft_k/_c are only sent if given; otherwise the FMU's
-  // own defaults apply.
-  auto compliance_it = info_.hardware_parameters.find("driveshaft_compliance");
-  if (compliance_it != info_.hardware_parameters.end() && compliance_it->second == "true") {
-    std::vector<FmuValueReference> vrs;
-    std::vector<double> values;
-    FmuValueReference vr{};
-    if (!find_vr_or_fail(fmu_, "driveshaft_compliance", &vr)) {
-      return hardware_interface::CallbackReturn::ERROR;
-    }
-    vrs.push_back(vr);
-    values.push_back(1.0);
-    for (const char * name : {"driveshaft_k", "driveshaft_c"}) {
-      auto p = info_.hardware_parameters.find(name);
-      if (p == info_.hardware_parameters.end()) continue;
-      if (!find_vr_or_fail(fmu_, name, &vr)) {
-        return hardware_interface::CallbackReturn::ERROR;
-      }
-      vrs.push_back(vr);
-      values.push_back(std::stod(p->second));
-    }
-    if (!fmu_client_set_real(fmu_, vrs.data(), vrs.size(), values.data())) {
-      RCLCPP_ERROR(logger(), "fmu_client_set_real(driveshaft_*) failed");
-      return hardware_interface::CallbackReturn::ERROR;
-    }
-    RCLCPP_INFO(logger(), "driveshaft_compliance on (%zu driveshaft_* value(s) sent)", vrs.size());
-  }
-
   if (!fmu_client_open_finish(fmu_)) {
     RCLCPP_ERROR(logger(), "fmu_client_open_finish('%s') failed", fmu_dir.c_str());
     return hardware_interface::CallbackReturn::ERROR;

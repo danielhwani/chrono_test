@@ -79,26 +79,6 @@
  *                                          feed them straight through
  *                                          instead of being averaged down
  *                                          to one shared angle.
- *  18: driveshaft_compliance
- *                          input   [0/1]   read once in build() (adds bodies,
- *                                          like four_wheel_drive/six_wheel).
- *                                          0 (default): every driven wheel is
- *                                          torqued directly by its drive
- *                                          motor, exactly as before -- bit-
- *                                          exact with every earlier
- *                                          validation run. Nonzero: each
- *                                          driven corner gets an intermediate
- *                                          axle body, motor -> axle ->
- *                                          [revolute + ChLinkRSDA torsional
- *                                          spring-damper] -> wheel (see
- *                                          AXLE_* constants).
- *  19: driveshaft_k       input   [N*m/rad] read once in build(); RSDA
- *                                          torsional stiffness, only used if
- *                                          driveshaft_compliance != 0.
- *                                          Default AXLE_TORSIONAL_K.
- *  20: driveshaft_c       input   [N*m*s/rad] read once in build(); RSDA
- *                                          torsional damping, same gating.
- *                                          Default AXLE_TORSIONAL_C.
  *
  * Build: see ../build.sh
  */
@@ -111,7 +91,6 @@
 #include "chrono/physics/ChContactMaterialNSC.h"
 #include "chrono/physics/ChLinkLock.h"
 #include "chrono/physics/ChLinkTSDA.h"
-#include "chrono/physics/ChLinkRSDA.h"
 #include "chrono/physics/ChLinkMotorRotationAngle.h"
 #include "chrono/physics/ChLinkMotorRotationTorque.h"
 #include "chrono/functions/ChFunctionConst.h"
@@ -140,25 +119,6 @@ static const double SPRING_K = 35000.0;
 static const double DAMPER_C = 3500.0;
 static const double SUSPENSION_TRAVEL_REST = 0.32;
 static const double DRIVE_TORQUE_DEFAULT = 260.0;
-// Driveshaft compliance (empirically chosen, order-of-magnitude
-// representative of real driveline elasticity -- half-shaft twist + tire
-// sidewall flex lumped into one torsional spring-damper -- not derived
-// from a specific real vehicle's driveshaft spec, same "empirically
-// picked" convention as kVelocityKp/kMaxDriveTorqueRear on the
-// ros2_control side). Added after the 6x6 sharp-turn oscillation
-// investigation found the wheel-spin path had literally no damping
-// element anywhere in the model (unlike the suspension's own
-// prismatic+TSDA) -- commanded torque reached the wheel's own inertia
-// completely unfiltered by the mechanical model itself. AXLE_TORSIONAL_K
-// picked so peak twist stays a few degrees at typical operating torque
-// (drive_torque ~260 N*m) while its natural frequency (~25 Hz, with
-// AXLE_INERTIA) stays well under the solver's 500 Hz step rate for
-// numerical safety; AXLE_TORSIONAL_C picked for a moderately-damped
-// (not oscillatory, not sluggish) response.
-static const double AXLE_MASS = 2.0;
-static const double AXLE_INERTIA = 0.2;
-static const double AXLE_TORSIONAL_K = 5000.0;
-static const double AXLE_TORSIONAL_C = 40.0;
 static const double GROUND_SIZE = 500.0;
 
 // ---- minimal FMI2 type definitions (see bouncing_ball_native.c for why) ----
@@ -196,12 +156,10 @@ typedef struct {
 struct Corner {
     std::shared_ptr<ChBody> upright;
     std::shared_ptr<ChBody> wheel;
-    std::shared_ptr<ChBody> axle;                           // null unless driven AND driveshaft_compliance -- see make_corner()
     std::shared_ptr<ChLinkMotorRotationAngle> steer_motor;  // null if not steered
     std::shared_ptr<ChFunctionConst> steer_fn;              // null if not steered
-    std::shared_ptr<ChLinkMotorRotationTorque> drive_motor; // null if not driven -- drives the wheel directly, or the axle when driveshaft_compliance
+    std::shared_ptr<ChLinkMotorRotationTorque> drive_motor; // null if not driven
     std::shared_ptr<ChFunctionConst> throttle_fn;           // null if not driven
-    std::shared_ptr<ChLinkRSDA> axle_wheel_rsda;            // null unless driven AND driveshaft_compliance -- axle->wheel torsional spring-damper
     double steer_deg_actual = 0.0;
 };
 
@@ -221,9 +179,6 @@ struct ModelInstance {
     fmi2Real steer_fl_deg_in = 0.0;
     fmi2Real steer_fr_deg_in = 0.0;
     fmi2Real independent_front_steer_in = 0.0;  // checked every step(), not build-time (see file header)
-    fmi2Real driveshaft_compliance_in = 0.0;    // read once in build(); 0.0=off (default, rigid wheel drive)
-    fmi2Real driveshaft_k_in = AXLE_TORSIONAL_K;  // read once in build(); only used if driveshaft_compliance
-    fmi2Real driveshaft_c_in = AXLE_TORSIONAL_C;  // read once in build(); only used if driveshaft_compliance
 
     fmi2Real chassis_x = 0.0, chassis_y = 0.0, chassis_z = 0.0;
     fmi2Real roll_deg = 0.0, pitch_deg = 0.0, yaw_deg = 0.0;
@@ -242,7 +197,6 @@ struct ModelInstance {
 
 static void make_corner(ChSystemNSC& sys, std::shared_ptr<ChBody> chassis, Corner& c,
                          double x, double y, double chassis_z, bool is_steered, bool is_driven,
-                         bool driveshaft_compliance, double axle_k, double axle_c,
                          std::shared_ptr<ChContactMaterial> mat) {
     ChVector3d mount_pos(x, y, chassis_z);
     double upright_z = WHEEL_RADIUS;
@@ -293,62 +247,17 @@ static void make_corner(ChSystemNSC& sys, std::shared_ptr<ChBody> chassis, Corne
     c.wheel->SetPos(upright_pos);
     sys.Add(c.wheel);
 
+    auto revolute = chrono_types::make_shared<ChLinkLockRevolute>();
     ChFramed rev_frame(upright_pos, QuatFromAngleX(CH_PI_2));
+    revolute->Initialize(spin_parent, c.wheel, rev_frame);
+    sys.Add(revolute);
 
-    if (!driveshaft_compliance) {
-        // Default (driveshaft_compliance off): the original rigid layout,
-        // kept verbatim -- same bodies/links added in the same order, so
-        // the default FMU stays bit-exact with every earlier validation run.
-        auto revolute = chrono_types::make_shared<ChLinkLockRevolute>();
-        revolute->Initialize(spin_parent, c.wheel, rev_frame);
-        sys.Add(revolute);
-
-        if (is_driven) {
-            c.drive_motor = chrono_types::make_shared<ChLinkMotorRotationTorque>();
-            c.drive_motor->Initialize(spin_parent, c.wheel, rev_frame);
-            c.throttle_fn = chrono_types::make_shared<ChFunctionConst>(DRIVE_TORQUE_DEFAULT);
-            c.drive_motor->SetTorqueFunction(c.throttle_fn);
-            sys.Add(c.drive_motor);
-        }
-    } else if (is_driven) {
-        // Driveshaft compliance: spin_parent -[motor torque, rigid]-> axle
-        // -[revolute + RSDA torsional spring-damper]-> wheel. The wheel is
-        // the body that actually rolls/contacts the ground; the axle is a
-        // small intermediate body representing the driveshaft itself, so
-        // commanded torque no longer reaches the wheel's own inertia with
-        // zero mechanical damping (see AXLE_* constants' comment).
-        c.axle = chrono_types::make_shared<ChBody>();
-        c.axle->SetMass(AXLE_MASS);
-        c.axle->SetInertiaXX(ChVector3d(AXLE_INERTIA, AXLE_INERTIA, AXLE_INERTIA));
-        c.axle->SetPos(upright_pos);
-        sys.Add(c.axle);
-
-        auto motor_revolute = chrono_types::make_shared<ChLinkLockRevolute>();
-        motor_revolute->Initialize(spin_parent, c.axle, rev_frame);
-        sys.Add(motor_revolute);
-
+    if (is_driven) {
         c.drive_motor = chrono_types::make_shared<ChLinkMotorRotationTorque>();
-        c.drive_motor->Initialize(spin_parent, c.axle, rev_frame);
+        c.drive_motor->Initialize(spin_parent, c.wheel, rev_frame);
         c.throttle_fn = chrono_types::make_shared<ChFunctionConst>(DRIVE_TORQUE_DEFAULT);
         c.drive_motor->SetTorqueFunction(c.throttle_fn);
         sys.Add(c.drive_motor);
-
-        auto wheel_revolute = chrono_types::make_shared<ChLinkLockRevolute>();
-        wheel_revolute->Initialize(c.axle, c.wheel, rev_frame);
-        sys.Add(wheel_revolute);
-
-        c.axle_wheel_rsda = chrono_types::make_shared<ChLinkRSDA>();
-        c.axle_wheel_rsda->Initialize(c.axle, c.wheel, rev_frame);
-        c.axle_wheel_rsda->SetSpringCoefficient(axle_k);
-        c.axle_wheel_rsda->SetDampingCoefficient(axle_c);
-        c.axle_wheel_rsda->SetRestAngle(0.0);
-        sys.Add(c.axle_wheel_rsda);
-    } else {
-        // driveshaft_compliance on, but this corner is undriven: it still
-        // needs to spin freely (no motor, so no driveshaft to model).
-        auto revolute = chrono_types::make_shared<ChLinkLockRevolute>();
-        revolute->Initialize(spin_parent, c.wheel, rev_frame);
-        sys.Add(revolute);
     }
 }
 
@@ -394,15 +303,14 @@ void ModelInstance::build() {
     // that's off by default, preserving bit-exact behavior with every
     // earlier validation run when not explicitly turned on).
     bool four_wheel_drive = four_wheel_drive_in != 0.0;
-    bool compliance = driveshaft_compliance_in != 0.0;
-    make_corner(*sys, chassis, corners[0], wheelbase / 2, TRACK / 2, chassis_z, true, four_wheel_drive, compliance, driveshaft_k_in, driveshaft_c_in, mat);
-    make_corner(*sys, chassis, corners[1], wheelbase / 2, -TRACK / 2, chassis_z, true, four_wheel_drive, compliance, driveshaft_k_in, driveshaft_c_in, mat);
+    make_corner(*sys, chassis, corners[0], wheelbase / 2, TRACK / 2, chassis_z, true, four_wheel_drive, mat);
+    make_corner(*sys, chassis, corners[1], wheelbase / 2, -TRACK / 2, chassis_z, true, four_wheel_drive, mat);
     if (six_wheel) {
-        make_corner(*sys, chassis, corners[2], 0.0, TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
-        make_corner(*sys, chassis, corners[3], 0.0, -TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
+        make_corner(*sys, chassis, corners[2], 0.0, TRACK / 2, chassis_z, false, true, mat);
+        make_corner(*sys, chassis, corners[3], 0.0, -TRACK / 2, chassis_z, false, true, mat);
     }
-    make_corner(*sys, chassis, corners[4], -wheelbase / 2, TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
-    make_corner(*sys, chassis, corners[5], -wheelbase / 2, -TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
+    make_corner(*sys, chassis, corners[4], -wheelbase / 2, TRACK / 2, chassis_z, false, true, mat);
+    make_corner(*sys, chassis, corners[5], -wheelbase / 2, -TRACK / 2, chassis_z, false, true, mat);
 
     built = true;
 }
@@ -484,9 +392,6 @@ void ModelInstance::step(double dt) {
 #define VR_STEER_FL_DEG_IN 15
 #define VR_STEER_FR_DEG_IN 16
 #define VR_INDEPENDENT_FRONT_STEER 17
-#define VR_DRIVESHAFT_COMPLIANCE 18
-#define VR_DRIVESHAFT_K 19
-#define VR_DRIVESHAFT_C 20
 
 static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
@@ -499,9 +404,6 @@ static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
         case VR_STEER_FL_DEG_IN: return &m->steer_fl_deg_in;
         case VR_STEER_FR_DEG_IN: return &m->steer_fr_deg_in;
         case VR_INDEPENDENT_FRONT_STEER: return &m->independent_front_steer_in;
-        case VR_DRIVESHAFT_COMPLIANCE: return &m->driveshaft_compliance_in;
-        case VR_DRIVESHAFT_K: return &m->driveshaft_k_in;
-        case VR_DRIVESHAFT_C: return &m->driveshaft_c_in;
         case VR_CHASSIS_X: return &m->chassis_x;
         case VR_CHASSIS_Y: return &m->chassis_y;
         case VR_CHASSIS_Z: return &m->chassis_z;
