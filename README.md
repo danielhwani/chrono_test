@@ -1033,6 +1033,12 @@ ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_con
 
 **PC2 쪽 이름도 이어서 리네임**: RViz로 분산 버전이 정상 동작하는 걸 확인한 직후, 사용자가 "`chrono_split_dynamics_node`가 PC1이 아니라 PC2에 해당하는 것 같은데 이름이 적절하지 않은 것 같다"고 짚어서 아키텍처(어느 쪽이 PC1/PC2인지)를 다시 점검 — 배치 자체는 원래부터 맞았음(`ChronoSupervisoryFmuSystemInterface`가 `controller_manager`가 직접 로드하는 PC1 쪽 플러그인, `chrono_fmu_dynamics_node`가 실제 `fmu_client`를 부르는 PC2 쪽 노드), 헷갈린 건 PC2 쪽 노드 이름이 `chrono_split_dynamics_node`로 스플릿 버전 전용처럼 보였던 것. 이제 스플릿/분산 두 트랙이 이 노드를 공유하는 상황이라, 트랙 중립적인 이름으로 다시 리네임: **`chrono_split_dynamics_node` → `chrono_fmu_dynamics_node`**(클래스 `ChronoSplitDynamicsNode` → `ChronoFmuDynamicsNode`), `git mv` + 식별자 전체 치환. 이 노드를 쓰는 양쪽 패키지(`chrono_split_ecu_bridge_hw_interface`의 launch 파일/`package.xml`, `chrono_supervisory_fmu_hw_interface`의 launch 파일/`package.xml`)도 같이 갱신. 재빌드 후 스플릿/분산 두 트랙 다 새 실행 파일명(`ros2 run chrono_fmu_dynamics_node chrono_fmu_dynamics_node ...`)으로 정상 기동 재확인.
 
+**회전 동작 검증(4륜 분산 버전)**: 여태까지 분산 버전 테스트는 전부 `angular.z=0.0`(직진)만 썼음 — 6x6 급회전 특성을 분리해서 보려고 의도적으로 그랬던 것. 이번엔 `linear.x=1.0, angular.z=0.3`으로 실제 회전을 확인: 조향 `FL=0.567`/`FR=0.789` rad — 인프로세스/스플릿에서 같은 명령으로 본 값과 완전히 동일(4c의 FL/FR 독립 조향이 분산 버전에서도 정상). 속도는 8초에 걸쳐 `2.27→2.82→2.98→2.97→2.96→2.96→3.01→3.03 rad/s`로 진동 없이 매끄럽게 수렴 — 직진 목표치(~3.1 rad/s)보다 살짝 낮은 건 회전 저항 때문으로, 정상 범위(4륜이라 6x6 급회전 때 봤던 심한 감속은 없음).
+
+### VehicleCommand/VehicleStatus 메시지 주석 정리
+
+분산 버전의 메시지 구조를 다시 살펴보다가, `VehicleCommand.msg`/`VehicleStatus.msg`의 주석이 아직 "Bridge 2 (ECU -> ...)", "the ECU is responsible for..."처럼 **스플릿 버전 전용이던 시절 그대로** 남아있는 걸 발견 — 필드 구조 자체는 항상 트랙 중립적이었지만(둘 다 deg/N·m, 축 레벨), 프로즈가 분산 버전(ECU 노드 자체가 없음)을 반영 못 하고 있었음. 두 트랙의 송신/수신 주체를 명시하도록 주석만 재작성(필드/로직 변경 없음).
+
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
 이 조사의 출발점은 Modelica 툴체인 경험: 거기선 C++로 생성한 실시간 시뮬레이션이 Python보다 지터가 확실히 작았어서, Chrono/`pythonfmu`도 당연히 같은 방향일 거라 예상하고 C++ 포팅을 시작함. 아래에서 보듯 처음엔 정반대 결과가 나와서 당황했지만, 결국 원인은 C++ 자체가 아니라 첫 구현이 고른 슬립 방식이었음 — Modelica가 생성하는 코드는 애초에 이 함정을 피하도록 짜여 있었을 것.
