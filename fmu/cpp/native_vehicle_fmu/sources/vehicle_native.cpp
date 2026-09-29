@@ -21,10 +21,19 @@
  *     validation run), on switches to the 3-axle truck layout (front
  *     steered, mid+rear always driven, front driven too iff
  *     four_wheel_drive) -- heavier chassis, longer wheelbase, same per-
- *     corner constants otherwise. Still MVP-scoped: rigid tire model only,
- *     flat terrain only, parallel steering only (no ackermann/
- *     empirical_tire/bumps_terrain here yet -- those remain
- *     pythonfmu-only, see fmu/chrono_vehicle_fmu.py).
+ *     corner constants otherwise.
+ *   empirical_tire: off by default (rigid Coulomb contact, bit-exact with
+ *     every earlier validation run), on switches every wheel to the
+ *     simplified slip-based tire force law ported from simple_vehicle.py's
+ *     apply_tire_forces(): wheel contact friction set to 0 so Bullet only
+ *     supplies the normal reaction, and a per-wheel force accumulator
+ *     applies longitudinal/lateral force from slip ratio/slip angle,
+ *     saturating at a friction circle.
+ *   bumps_terrain: off by default (flat ground, bit-exact), on adds
+ *     simple_vehicle.py's row of 5 half-buried cylinder speed bumps across
+ *     the straight-ahead path (x=8m onward, 6m apart).
+ * Still parallel steering only (no ackermann here -- that remains
+ * pythonfmu-only, see fmu/chrono_vehicle_fmu.py).
  *
  * Variables (value references):
  *   0: steer_deg          input   [deg]   commanded front-wheel steer angle
@@ -79,9 +88,15 @@
  *                                          feed them straight through
  *                                          instead of being averaged down
  *                                          to one shared angle.
+ *  18: empirical_tire     input   [0/1]   read once in build(); nonzero
+ *                                          switches to the slip-based tire
+ *                                          force model (see above)
+ *  19: bumps_terrain      input   [0/1]   read once in build(); nonzero
+ *                                          adds the speed-bump row
  *
  * Build: see ../build.sh
  */
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -120,6 +135,19 @@ static const double DAMPER_C = 3500.0;
 static const double SUSPENSION_TRAVEL_REST = 0.32;
 static const double DRIVE_TORQUE_DEFAULT = 260.0;
 static const double GROUND_SIZE = 500.0;
+
+// "empirical" tire model constants
+static const double TIRE_MU = 0.9;
+static const double TIRE_CORNERING_STIFFNESS = 12.0;
+static const double TIRE_LONGITUDINAL_STIFFNESS = 15.0;
+static const double TIRE_SLIP_SPEED_EPS = 0.5;
+
+// "bumps" terrain constants
+static const double BUMP_HEIGHT = 0.12;
+static const double BUMP_RADIUS = 0.35;
+static const double BUMP_START_X = 8.0;
+static const double BUMP_SPACING = 6.0;
+static const int BUMP_COUNT = 5;
 
 // ---- minimal FMI2 type definitions (see bouncing_ball_native.c for why) ----
 typedef void* fmi2Component;
@@ -160,6 +188,7 @@ struct Corner {
     std::shared_ptr<ChFunctionConst> steer_fn;              // null if not steered
     std::shared_ptr<ChLinkMotorRotationTorque> drive_motor; // null if not driven
     std::shared_ptr<ChFunctionConst> throttle_fn;           // null if not driven
+    unsigned int tire_accumulator = 0;                      // only used if empirical_tire
     double steer_deg_actual = 0.0;
 };
 
@@ -179,6 +208,8 @@ struct ModelInstance {
     fmi2Real steer_fl_deg_in = 0.0;
     fmi2Real steer_fr_deg_in = 0.0;
     fmi2Real independent_front_steer_in = 0.0;  // checked every step(), not build-time (see file header)
+    fmi2Real empirical_tire_in = 0.0;    // read once in build(); 0.0=off (default, rigid Coulomb contact)
+    fmi2Real bumps_terrain_in = 0.0;     // read once in build(); 0.0=off (default, flat ground)
 
     fmi2Real chassis_x = 0.0, chassis_y = 0.0, chassis_z = 0.0;
     fmi2Real roll_deg = 0.0, pitch_deg = 0.0, yaw_deg = 0.0;
@@ -189,6 +220,7 @@ struct ModelInstance {
     std::shared_ptr<ChBody> chassis;
     Corner corners[6];
     bool six_wheel = false;
+    bool empirical_tire = false;
     bool built = false;
 
     void build();
@@ -277,6 +309,23 @@ void ModelInstance::build() {
     ground->SetFixed(true);
     sys->Add(ground);
 
+    // bumps (optional): rounded ridges on top of the flat ground, spanning
+    // the vehicle's width so both wheels of an axle cross together. Mostly
+    // embedded in the ground box (both Fixed, so the overlap is harmless)
+    // with only the top BUMP_HEIGHT poking up. Added right after the ground,
+    // same body order as simple_vehicle.py's make_vehicle().
+    if (bumps_terrain_in != 0.0) {
+        double bump_width = TRACK + 1.0;
+        double embed = BUMP_RADIUS - BUMP_HEIGHT;
+        for (int i = 0; i < BUMP_COUNT; ++i) {
+            auto bump = chrono_types::make_shared<ChBodyEasyCylinder>(
+                ChAxis::Y, BUMP_RADIUS, bump_width, 1000.0, true, true, mat);
+            bump->SetPos(ChVector3d(BUMP_START_X + i * BUMP_SPACING, 0, -embed));
+            bump->SetFixed(true);
+            sys->Add(bump);
+        }
+    }
+
     six_wheel = six_wheel_in != 0.0;
     const double* chassis_dims = six_wheel ? CHASSIS_DIMS_6W : CHASSIS_DIMS;
     double chassis_mass = six_wheel ? CHASSIS_MASS_6W : CHASSIS_MASS;
@@ -312,7 +361,67 @@ void ModelInstance::build() {
     make_corner(*sys, chassis, corners[4], -wheelbase / 2, TRACK / 2, chassis_z, false, true, mat);
     make_corner(*sys, chassis, corners[5], -wheelbase / 2, -TRACK / 2, chassis_z, false, true, mat);
 
+    // empirical tire (optional): same as simple_vehicle.py's
+    // setup_empirical_tire_wheels() -- zero wheel contact friction so Bullet
+    // only supplies the normal reaction, plus one force accumulator per
+    // wheel for apply_tire_forces() to fill every step.
+    empirical_tire = empirical_tire_in != 0.0;
+    if (empirical_tire) {
+        auto zero_mu_mat = chrono_types::make_shared<ChContactMaterialNSC>();
+        zero_mu_mat->SetFriction(0.0f);
+        zero_mu_mat->SetRestitution(0.0f);
+        for (Corner& c : corners) {
+            if (!c.wheel) continue;
+            c.wheel->GetCollisionModel()->SetAllShapesMaterial(zero_mu_mat);
+            c.tire_accumulator = c.wheel->AddAccumulator();
+        }
+    }
+
     built = true;
+}
+
+// Simplified, hand-rolled slip-based tire force (port of simple_vehicle.py's
+// apply_tire_forces()): per wheel, derive rolling/spin-axis directions from
+// the wheel's own orientation (works steered or not), compute slip ratio and
+// slip angle, take the normal load from the engine's own contact resolution,
+// and apply a linear-then-saturating (friction-circle) force at the contact
+// point.
+static void apply_tire_forces(Corner& c) {
+    const ChVector3d up(0, 0, 1);
+    c.wheel->EmptyAccumulator(c.tire_accumulator);
+
+    ChVector3d spin_axis = c.wheel->GetRot().Rotate(ChVector3d(0, 1, 0));
+    spin_axis = spin_axis - up * spin_axis.Dot(up);  // project out any camber/tilt
+    double spin_len = spin_axis.Length();
+    if (spin_len < 1e-6) return;
+    spin_axis = spin_axis * (1.0 / spin_len);
+    ChVector3d heading = spin_axis.Cross(up);  // rolling direction, in the ground plane
+    heading = heading * (1.0 / heading.Length());
+
+    ChVector3d vel = c.wheel->GetPosDt();
+    double v_forward = vel.Dot(heading);
+    double v_lateral = vel.Dot(spin_axis);
+    double omega_spin = c.wheel->GetAngVelParent().Dot(spin_axis);
+
+    double v_norm = std::max(std::fabs(v_forward), TIRE_SLIP_SPEED_EPS);
+    double kappa = (omega_spin * WHEEL_RADIUS - v_forward) / v_norm;
+    double alpha = std::atan2(v_lateral, v_norm * (v_forward >= 0 ? 1 : -1));
+
+    double fz = std::max(c.wheel->GetContactForce().z(), 0.0);
+    double fx = TIRE_LONGITUDINAL_STIFFNESS * fz * kappa;
+    double fy = -TIRE_CORNERING_STIFFNESS * fz * alpha;
+
+    double f_max = TIRE_MU * fz;
+    double mag = std::hypot(fx, fy);
+    if (mag > f_max && mag > 1e-9) {
+        double scale = f_max / mag;
+        fx *= scale;
+        fy *= scale;
+    }
+
+    ChVector3d force = heading * fx + spin_axis * fy;
+    ChVector3d contact_point = c.wheel->GetPos() - up * WHEEL_RADIUS;
+    c.wheel->AccumulateForce(c.tire_accumulator, force, contact_point, false);
 }
 
 static void apply_differential(Corner& left, Corner& right, double nominal_torque,
@@ -353,6 +462,11 @@ void ModelInstance::step(double dt) {
     if (corners[0].drive_motor) {                                      // front axle, only if four_wheel_drive
         apply_differential(corners[0], corners[1], drive_torque_front_in);
     }
+    if (empirical_tire) {
+        for (Corner& c : corners) {
+            if (c.wheel) apply_tire_forces(c);
+        }
+    }
 
     sys->DoStepDynamics(dt);
 
@@ -392,6 +506,8 @@ void ModelInstance::step(double dt) {
 #define VR_STEER_FL_DEG_IN 15
 #define VR_STEER_FR_DEG_IN 16
 #define VR_INDEPENDENT_FRONT_STEER 17
+#define VR_EMPIRICAL_TIRE 18
+#define VR_BUMPS_TERRAIN 19
 
 static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
@@ -404,6 +520,8 @@ static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
         case VR_STEER_FL_DEG_IN: return &m->steer_fl_deg_in;
         case VR_STEER_FR_DEG_IN: return &m->steer_fr_deg_in;
         case VR_INDEPENDENT_FRONT_STEER: return &m->independent_front_steer_in;
+        case VR_EMPIRICAL_TIRE: return &m->empirical_tire_in;
+        case VR_BUMPS_TERRAIN: return &m->bumps_terrain_in;
         case VR_CHASSIS_X: return &m->chassis_x;
         case VR_CHASSIS_Y: return &m->chassis_y;
         case VR_CHASSIS_Z: return &m->chassis_z;

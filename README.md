@@ -492,7 +492,7 @@ fmpy로 같은 dt(0.005)를 맞춰 6초를 돌려보면 `chassis_x/y`, `yaw_deg`
 
 **`OMSimulator`로 실제 구동 — 진짜 차량 물리가 Modelica master의 slave로 동작함**: 위 명령 그대로 `exit 0`, `result.csv`에 직진 가속(steer_deg 기본값 0이라 입력 안 주면 직진, t=6s에 x≈21.4m, speed≈7.1m/s로 물리적으로 타당)이 정상적으로 찍힘. 바운싱볼에서 이미 증명된 "네이티브 C++ FMU는 Python 없이, 어떤 FMI master든(OMSimulator 포함) 코드 수정 없이 불러온다"는 게 실제 차량 규모(강체 10여 개, 조인트 20여 개, 접촉/서스펜션/디퍼렌셜)에서도 그대로 성립함을 확인.
 
-**다음**: `six_wheel`/`ackermann`/`empirical_tire`/`bumps_terrain`을 C++ 쪽에도 추가(파라미터로), Irrlicht 렌더링(아직 미검증인 `libChrono_irrlicht.so` 경로), OMEdit GUI에서 여전히 안 되는지 재확인(바운싱볼 때와 같은 한계일 가능성 높음, 재확인은 안 함).
+**다음**: `six_wheel`/`ackermann`/`empirical_tire`/`bumps_terrain`을 C++ 쪽에도 추가(파라미터로 — 이후 `ackermann`을 뺀 셋 모두 포팅됨, 아래 "노면/타이어 모델을 네이티브 C++ FMU로 포팅" 참고), Irrlicht 렌더링(아직 미검증인 `libChrono_irrlicht.so` 경로), OMEdit GUI에서 여전히 안 되는지 재확인(바운싱볼 때와 같은 한계일 가능성 높음, 재확인은 안 함).
 
 ### `fmu_driver` 일반화 — 바운싱볼 전용에서 임의의 FMU로
 
@@ -1167,6 +1167,28 @@ rear_wheels_names: ["rear_left_wheel_joint", "rear_right_wheel_joint"]          
 ### VehicleCommand/VehicleStatus 메시지 주석 정리
 
 분산 버전의 메시지 구조를 다시 살펴보다가, `VehicleCommand.msg`/`VehicleStatus.msg`의 주석이 아직 "Bridge 2 (ECU -> ...)", "the ECU is responsible for..."처럼 **스플릿 버전 전용이던 시절 그대로** 남아있는 걸 발견 — 필드 구조 자체는 항상 트랙 중립적이었지만(둘 다 deg/N·m, 축 레벨), 프로즈가 분산 버전(ECU 노드 자체가 없음)을 반영 못 하고 있었음. 두 트랙의 송신/수신 주체를 명시하도록 주석만 재작성(필드/로직 변경 없음).
+
+### 노면/타이어 모델을 네이티브 C++ FMU로 포팅 (`bumps_terrain`, `empirical_tire`)
+
+`simple_vehicle.py`/pythonfmu에만 있던 두 구조 옵션을 `vehicle_native.cpp`에 추가함. 둘 다 `four_wheel_drive`/`six_wheel`과 같은 방식이고, `build()`에서 한 번만 읽으며 기본값은 0(꺼짐)임.
+- `empirical_tire` (VR 18): `setup_empirical_tire_wheels()`/`apply_tire_forces()`를 그대로 옮김. 바퀴 접촉 마찰을 0으로 두고, 바퀴마다 force accumulator를 붙여 슬립비/슬립각 기반 종·횡력을 friction circle에서 포화시켜 가함. 적용 순서도 Python과 같음(디퍼렌셜 3축 → 타이어력 → `DoStepDynamics`).
+- `bumps_terrain` (VR 19): 반쯤 묻힌 원통 방지턱 5개(x=8m부터 6m 간격). body 추가 순서까지 Python과 맞춤(ground 바로 다음, chassis 전).
+- VR 18은 제거된 driveshaft_compliance가 쓰던 번호를 재사용함. 모든 호출자가 이름으로 VR을 찾으므로(`fmu_client_find_vr`, fmpy) 문제없음.
+
+아직 ros2_control 세 트랙 어디에도 연결하지 않음(FMU 레벨만).
+
+**검증**:
+- 기본값 경로: HEAD로 빌드한 `.so`와 새 `.so`를 기존 5개 구성(4륜 2WD/4WD, 6륜, 6x6, 독립 조향)에서 dt=2ms, 6초 동안 0.2초마다 9개 출력 전부 비교 → **전부 `0.00e+00`**. 옵션을 안 켜면 완전히 이전과 같음.
+- `bumps_terrain`: pythonfmu와 10초 직진(x≈34.5m, 방지턱 5개 모두 통과)에서 **bit-exact**.
+- `empirical_tire`: pythonfmu와 **처음 2스텝만** 정확히 일치하고(4륜 `0.00e+00`, 6x6 최대 5e-9), 6초 뒤에는 yaw가 약 5° 차이 남. 원인을 끝까지 추적함:
+  - 임시 디버그 출력(scratch 사본에서만, 커밋 안 함)으로 바퀴별 중간값(spin_axis, 속도, ω, κ, α, Fz, Fx, Fy)을 `%.17g`로 비교함. 스텝 0~1은 이미 3개 바퀴에 수천 N의 타이어력이 걸리는데도 **17자리까지 전부 동일**함. 첫 차이는 스텝 2의 `spin_axis.x` 마지막 1비트(≈1.7e-21)였음. 이건 Chrono의 `GetRot().Rotate()`를 pychrono 라이브러리와 이 `.so`가 각자 따로 컴파일해서 생기는 반올림 차이이고, 포팅 로직 차이가 아님.
+  - Python 3.12의 `math.hypot`도 glibc `hypot`과 약 0.6% 확률로 1ulp 다름. 다만 양쪽을 `sqrt(fx*fx+fy*fy)`로 바꿔봐도 발산은 그대로라, 이게 유일한 원인은 아님.
+  - **모델 자체가 혼돈적임**: 같은 FMU에서 구동 토크만 1e-12 N·m 바꿔도 6초 뒤 yaw가 네이티브 9°, pythonfmu 약 14° 달라짐. 참고로 rigid 타이어도 같은 교란에 0.5° 달라짐. 기존 구성들이 bit-exact였던 건 두 구현이 연산을 완전히 똑같이 했기 때문임.
+  - 그래서 검증 스크립트의 tire 시나리오는 "처음 2스텝 정확히 일치"로 정의함(스텝 0~1에 이미 큰 타이어력이 걸리므로 로직 검증으로 충분함). `validate_native_vehicle_fmu.py`는 8개 구성 모두 통과(최악 4.96e-09).
+
+**발견한 empirical 타이어 모델의 문제 (Python 원본에도 똑같이 있음, 아직 안 고침)**:
+1. **슬립각 부호 버그**: `alpha = atan2(v_lat, max(|v_x|, eps) * sign(v_x))`에서, 정지 상태의 `v_x`가 −1e-17처럼 부호만 음수면 α가 0이 아니라 ≈−π가 됨. 실제 로그: 스텝 1의 FR 바퀴는 횡속도가 0.0015 m/s뿐인데 α=−3.1386이 나와 횡력이 μ·Fz=5643 N으로 최대 포화됨(정상이라면 ≈226 N). 다만 scratch에서 `atan2(v_lat, max(|v_x|, eps))`로 고쳐봐도 민감도는 비슷함(1e-12 교란에 yaw 7~9°). 실재하는 버그지만 혼돈의 주원인은 아님.
+2. **저속에서 explicit 힘이 너무 뻣뻣함 (주원인으로 추정)**: 저속에서 슬립 기반 힘은 사실상 횡방향 ≈24·Fz N/(m/s)(Fz≈3000 N이면 약 7만), 종방향도 비슷한 크기의 댐퍼임. 이걸 dt=5ms마다 explicit으로 가하면 안정 한계를 한참 넘음. 그래서 friction circle 포화선에서 부호가 매 스텝 뒤집힘. 로그에서도 RR의 Fx가 +4721 → −2767 N, FR의 Fy가 +5643 → −6889 N으로 스텝마다 뒤집힘. 흔히 쓰는 해법은 relaxation length(슬립에 1차 지연)나 저속 구간 감쇠 처리임. 어떤 방식으로 고칠지는 아직 결정 안 함.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
