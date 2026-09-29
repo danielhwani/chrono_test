@@ -73,6 +73,12 @@
     <ScalarVariable name="driveshaft_compliance" valueReference="18" causality="input" variability="continuous">
       <Real start="0.0"/>
     </ScalarVariable>
+    <ScalarVariable name="driveshaft_k" valueReference="19" causality="input" variability="continuous">
+      <Real start="5000.0"/>
+    </ScalarVariable>
+    <ScalarVariable name="driveshaft_c" valueReference="20" causality="input" variability="continuous">
+      <Real start="40.0"/>
+    </ScalarVariable>
   </ModelVariables>
 
   <ModelStructure>

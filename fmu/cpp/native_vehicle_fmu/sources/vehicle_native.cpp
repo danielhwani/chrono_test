@@ -92,6 +92,13 @@
  *                                          [revolute + ChLinkRSDA torsional
  *                                          spring-damper] -> wheel (see
  *                                          AXLE_* constants).
+ *  19: driveshaft_k       input   [N*m/rad] read once in build(); RSDA
+ *                                          torsional stiffness, only used if
+ *                                          driveshaft_compliance != 0.
+ *                                          Default AXLE_TORSIONAL_K.
+ *  20: driveshaft_c       input   [N*m*s/rad] read once in build(); RSDA
+ *                                          torsional damping, same gating.
+ *                                          Default AXLE_TORSIONAL_C.
  *
  * Build: see ../build.sh
  */
@@ -215,6 +222,8 @@ struct ModelInstance {
     fmi2Real steer_fr_deg_in = 0.0;
     fmi2Real independent_front_steer_in = 0.0;  // checked every step(), not build-time (see file header)
     fmi2Real driveshaft_compliance_in = 0.0;    // read once in build(); 0.0=off (default, rigid wheel drive)
+    fmi2Real driveshaft_k_in = AXLE_TORSIONAL_K;  // read once in build(); only used if driveshaft_compliance
+    fmi2Real driveshaft_c_in = AXLE_TORSIONAL_C;  // read once in build(); only used if driveshaft_compliance
 
     fmi2Real chassis_x = 0.0, chassis_y = 0.0, chassis_z = 0.0;
     fmi2Real roll_deg = 0.0, pitch_deg = 0.0, yaw_deg = 0.0;
@@ -233,7 +242,8 @@ struct ModelInstance {
 
 static void make_corner(ChSystemNSC& sys, std::shared_ptr<ChBody> chassis, Corner& c,
                          double x, double y, double chassis_z, bool is_steered, bool is_driven,
-                         bool driveshaft_compliance, std::shared_ptr<ChContactMaterial> mat) {
+                         bool driveshaft_compliance, double axle_k, double axle_c,
+                         std::shared_ptr<ChContactMaterial> mat) {
     ChVector3d mount_pos(x, y, chassis_z);
     double upright_z = WHEEL_RADIUS;
     ChVector3d upright_pos(x, y, upright_z);
@@ -329,8 +339,8 @@ static void make_corner(ChSystemNSC& sys, std::shared_ptr<ChBody> chassis, Corne
 
         c.axle_wheel_rsda = chrono_types::make_shared<ChLinkRSDA>();
         c.axle_wheel_rsda->Initialize(c.axle, c.wheel, rev_frame);
-        c.axle_wheel_rsda->SetSpringCoefficient(AXLE_TORSIONAL_K);
-        c.axle_wheel_rsda->SetDampingCoefficient(AXLE_TORSIONAL_C);
+        c.axle_wheel_rsda->SetSpringCoefficient(axle_k);
+        c.axle_wheel_rsda->SetDampingCoefficient(axle_c);
         c.axle_wheel_rsda->SetRestAngle(0.0);
         sys.Add(c.axle_wheel_rsda);
     } else {
@@ -385,14 +395,14 @@ void ModelInstance::build() {
     // earlier validation run when not explicitly turned on).
     bool four_wheel_drive = four_wheel_drive_in != 0.0;
     bool compliance = driveshaft_compliance_in != 0.0;
-    make_corner(*sys, chassis, corners[0], wheelbase / 2, TRACK / 2, chassis_z, true, four_wheel_drive, compliance, mat);
-    make_corner(*sys, chassis, corners[1], wheelbase / 2, -TRACK / 2, chassis_z, true, four_wheel_drive, compliance, mat);
+    make_corner(*sys, chassis, corners[0], wheelbase / 2, TRACK / 2, chassis_z, true, four_wheel_drive, compliance, driveshaft_k_in, driveshaft_c_in, mat);
+    make_corner(*sys, chassis, corners[1], wheelbase / 2, -TRACK / 2, chassis_z, true, four_wheel_drive, compliance, driveshaft_k_in, driveshaft_c_in, mat);
     if (six_wheel) {
-        make_corner(*sys, chassis, corners[2], 0.0, TRACK / 2, chassis_z, false, true, compliance, mat);
-        make_corner(*sys, chassis, corners[3], 0.0, -TRACK / 2, chassis_z, false, true, compliance, mat);
+        make_corner(*sys, chassis, corners[2], 0.0, TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
+        make_corner(*sys, chassis, corners[3], 0.0, -TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
     }
-    make_corner(*sys, chassis, corners[4], -wheelbase / 2, TRACK / 2, chassis_z, false, true, compliance, mat);
-    make_corner(*sys, chassis, corners[5], -wheelbase / 2, -TRACK / 2, chassis_z, false, true, compliance, mat);
+    make_corner(*sys, chassis, corners[4], -wheelbase / 2, TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
+    make_corner(*sys, chassis, corners[5], -wheelbase / 2, -TRACK / 2, chassis_z, false, true, compliance, driveshaft_k_in, driveshaft_c_in, mat);
 
     built = true;
 }
@@ -475,6 +485,8 @@ void ModelInstance::step(double dt) {
 #define VR_STEER_FR_DEG_IN 16
 #define VR_INDEPENDENT_FRONT_STEER 17
 #define VR_DRIVESHAFT_COMPLIANCE 18
+#define VR_DRIVESHAFT_K 19
+#define VR_DRIVESHAFT_C 20
 
 static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
@@ -488,6 +500,8 @@ static fmi2Real* var_ptr(ModelInstance* m, fmi2ValueReference vr) {
         case VR_STEER_FR_DEG_IN: return &m->steer_fr_deg_in;
         case VR_INDEPENDENT_FRONT_STEER: return &m->independent_front_steer_in;
         case VR_DRIVESHAFT_COMPLIANCE: return &m->driveshaft_compliance_in;
+        case VR_DRIVESHAFT_K: return &m->driveshaft_k_in;
+        case VR_DRIVESHAFT_C: return &m->driveshaft_c_in;
         case VR_CHASSIS_X: return &m->chassis_x;
         case VR_CHASSIS_Y: return &m->chassis_y;
         case VR_CHASSIS_Z: return &m->chassis_z;
