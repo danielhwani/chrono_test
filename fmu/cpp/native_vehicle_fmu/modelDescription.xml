@@ -70,6 +70,9 @@
     <ScalarVariable name="independent_front_steer" valueReference="17" causality="input" variability="continuous">
       <Real start="0.0"/>
     </ScalarVariable>
+    <ScalarVariable name="driveshaft_compliance" valueReference="18" causality="input" variability="continuous">
+      <Real start="0.0"/>
+    </ScalarVariable>
   </ModelVariables>
 
   <ModelStructure>
