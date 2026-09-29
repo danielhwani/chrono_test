@@ -1,0 +1,16 @@
+<library path="chrono_supervisory_fmu_system_interface">
+
+  <class name="chrono_supervisory_fmu_hw_interface/ChronoSupervisoryFmuSystemInterface"
+         type="chrono_supervisory_fmu_hw_interface::ChronoSupervisoryFmuSystemInterface"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      분산 버전 (distributed version): runs on the supervisory-controller
+      machine alongside ros2_control, owns the same velocity-&gt;torque
+      control logic as chrono_ros2_control/ChronoFmuSystemInterface, but
+      talks to chrono_split_dynamics_node on a separate machine over ONE
+      bridge (chrono_split_msgs VehicleCommand/VehicleStatus) instead of
+      calling fmu_client locally.
+    </description>
+  </class>
+
+</library>

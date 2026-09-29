@@ -1,8 +1,8 @@
-#include "chrono_remote_fmu_hw_interface/chrono_remote_fmu_system_interface.hpp"
+#include "chrono_supervisory_fmu_hw_interface/chrono_supervisory_fmu_system_interface.hpp"
 
 #include <cmath>
 
-namespace chrono_remote_fmu_hw_interface
+namespace chrono_supervisory_fmu_hw_interface
 {
 
 using chrono_split_msgs::msg::VehicleCommand;
@@ -13,10 +13,10 @@ namespace
 constexpr double kDegPerRad = 180.0 / M_PI;
 constexpr double kRadPerDeg = M_PI / 180.0;
 
-rclcpp::Logger logger() { return rclcpp::get_logger("ChronoRemoteFmuSystemInterface"); }
+rclcpp::Logger logger() { return rclcpp::get_logger("ChronoSupervisoryFmuSystemInterface"); }
 }  // namespace
 
-hardware_interface::CallbackReturn ChronoRemoteFmuSystemInterface::on_init(
+hardware_interface::CallbackReturn ChronoSupervisoryFmuSystemInterface::on_init(
   const hardware_interface::HardwareInfo & info)
 {
   if (
@@ -83,7 +83,7 @@ hardware_interface::CallbackReturn ChronoRemoteFmuSystemInterface::on_init(
   // 2's VehicleCommand/VehicleStatus directly instead of Bridge 1's
   // EcuCommand/EcuStatus (no middle ECU node on this track -- see header
   // comment).
-  node_ = std::make_shared<rclcpp::Node>("chrono_remote_fmu_hw_interface_node");
+  node_ = std::make_shared<rclcpp::Node>("chrono_supervisory_fmu_hw_interface_node");
   vehicle_command_pub_ =
     node_->create_publisher<VehicleCommand>("vehicle_command", rclcpp::SystemDefaultsQoS());
   vehicle_status_sub_ = node_->create_subscription<VehicleStatus>(
@@ -98,7 +98,7 @@ hardware_interface::CallbackReturn ChronoRemoteFmuSystemInterface::on_init(
 }
 
 std::vector<hardware_interface::StateInterface>
-ChronoRemoteFmuSystemInterface::export_state_interfaces()
+ChronoSupervisoryFmuSystemInterface::export_state_interfaces()
 {
   std::vector<hardware_interface::StateInterface> interfaces;
   interfaces.reserve(joints_.size() * 2);
@@ -113,7 +113,7 @@ ChronoRemoteFmuSystemInterface::export_state_interfaces()
 }
 
 std::vector<hardware_interface::CommandInterface>
-ChronoRemoteFmuSystemInterface::export_command_interfaces()
+ChronoSupervisoryFmuSystemInterface::export_command_interfaces()
 {
   std::vector<hardware_interface::CommandInterface> interfaces;
   interfaces.reserve(joints_.size());
@@ -126,7 +126,7 @@ ChronoRemoteFmuSystemInterface::export_command_interfaces()
   return interfaces;
 }
 
-hardware_interface::return_type ChronoRemoteFmuSystemInterface::read(
+hardware_interface::return_type ChronoSupervisoryFmuSystemInterface::read(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 {
   VehicleStatus status;
@@ -151,7 +151,7 @@ hardware_interface::return_type ChronoRemoteFmuSystemInterface::read(
   return hardware_interface::return_type::OK;
 }
 
-hardware_interface::return_type ChronoRemoteFmuSystemInterface::write(
+hardware_interface::return_type ChronoSupervisoryFmuSystemInterface::write(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
   // Steering: independent FL/FR passthrough, no averaging -- same as
@@ -208,7 +208,7 @@ hardware_interface::return_type ChronoRemoteFmuSystemInterface::write(
   return hardware_interface::return_type::OK;
 }
 
-ChronoRemoteFmuSystemInterface::~ChronoRemoteFmuSystemInterface()
+ChronoSupervisoryFmuSystemInterface::~ChronoSupervisoryFmuSystemInterface()
 {
   executor_.cancel();
   if (spin_thread_.joinable()) {
@@ -216,8 +216,8 @@ ChronoRemoteFmuSystemInterface::~ChronoRemoteFmuSystemInterface()
   }
 }
 
-}  // namespace chrono_remote_fmu_hw_interface
+}  // namespace chrono_supervisory_fmu_hw_interface
 
 #include "pluginlib/class_list_macros.hpp"
 PLUGINLIB_EXPORT_CLASS(
-  chrono_remote_fmu_hw_interface::ChronoRemoteFmuSystemInterface, hardware_interface::SystemInterface)
+  chrono_supervisory_fmu_hw_interface::ChronoSupervisoryFmuSystemInterface, hardware_interface::SystemInterface)

@@ -1,12 +1,12 @@
 <?xml version="1.0"?>
-<robot name="chrono_vehicle_remote">
+<robot name="chrono_vehicle_supervisory">
 
   <!--
     분산 버전 (distributed version) sibling of chrono_vehicle.urdf (the
     in-process URDF) — that file is untouched. Identical joint
     topology/visual geometry to chrono_vehicle.urdf and
     chrono_vehicle_split.urdf; the only difference is the <ros2_control>
-    block's <plugin>: ChronoRemoteFmuSystemInterface instead of
+    block's <plugin>: ChronoSupervisoryFmuSystemInterface instead of
     ChronoFmuSystemInterface or ChronoEcuBridgeSystemInterface. No
     fmu_dir <param> here (this plugin has no FMU access at all — see its
     own header comment) — fmu_dir instead lives as a ROS2 node parameter
@@ -175,7 +175,7 @@
 
   <ros2_control name="ChronoVehicleSystem" type="system">
     <hardware>
-      <plugin>chrono_remote_fmu_hw_interface/ChronoRemoteFmuSystemInterface</plugin>
+      <plugin>chrono_supervisory_fmu_hw_interface/ChronoSupervisoryFmuSystemInterface</plugin>
     </hardware>
 
     <joint name="front_left_steering_joint">

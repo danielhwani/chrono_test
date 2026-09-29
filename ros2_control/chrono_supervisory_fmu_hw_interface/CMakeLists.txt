@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chrono_remote_fmu_hw_interface)
+project(chrono_supervisory_fmu_hw_interface)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
   add_compile_options(-Wall -Wextra)
@@ -17,17 +17,17 @@ foreach(Dependency IN ITEMS ${THIS_PACKAGE_INCLUDE_DEPENDS})
   find_package(${Dependency} REQUIRED)
 endforeach()
 
-add_library(chrono_remote_fmu_system_interface SHARED
-  src/chrono_remote_fmu_system_interface.cpp
+add_library(chrono_supervisory_fmu_system_interface SHARED
+  src/chrono_supervisory_fmu_system_interface.cpp
 )
-target_compile_features(chrono_remote_fmu_system_interface PUBLIC cxx_std_17)
-target_include_directories(chrono_remote_fmu_system_interface PUBLIC
+target_compile_features(chrono_supervisory_fmu_system_interface PUBLIC cxx_std_17)
+target_include_directories(chrono_supervisory_fmu_system_interface PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(chrono_remote_fmu_system_interface PUBLIC ${THIS_PACKAGE_INCLUDE_DEPENDS})
+ament_target_dependencies(chrono_supervisory_fmu_system_interface PUBLIC ${THIS_PACKAGE_INCLUDE_DEPENDS})
 
-# Matches the <plugin>chrono_remote_fmu_hw_interface/ChronoRemoteFmuSystemInterface</plugin>
+# Matches the <plugin>chrono_supervisory_fmu_hw_interface/ChronoSupervisoryFmuSystemInterface</plugin>
 # string a URDF using this plugin needs.
 pluginlib_export_plugin_description_file(hardware_interface plugin.xml)
 
@@ -40,13 +40,13 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 install(
-  TARGETS chrono_remote_fmu_system_interface
-  EXPORT export_chrono_remote_fmu_system_interface
+  TARGETS chrono_supervisory_fmu_system_interface
+  EXPORT export_chrono_supervisory_fmu_system_interface
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
 
-ament_export_targets(export_chrono_remote_fmu_system_interface HAS_LIBRARY_TARGET)
+ament_export_targets(export_chrono_supervisory_fmu_system_interface HAS_LIBRARY_TARGET)
 ament_export_dependencies(${THIS_PACKAGE_INCLUDE_DEPENDS})
 ament_package()

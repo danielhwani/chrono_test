@@ -1,17 +1,17 @@
 <?xml version="1.0"?>
-<robot name="chrono_vehicle_remote_6x6">
+<robot name="chrono_vehicle_supervisory_6x6">
 
   <!--
-    6x6 sibling of chrono_vehicle_remote.urdf (분산 버전/distributed version,
+    6x6 sibling of chrono_vehicle_supervisory.urdf (분산 버전/distributed version,
     4-wheel/2-axle) — that file is untouched. Same
-    ChronoRemoteFmuSystemInterface plugin, plus one extra
+    ChronoSupervisoryFmuSystemInterface plugin, plus one extra
     <param name="six_wheel">true</param> that tells the plugin to fan the
     traction P-loop's torque across 3 axles instead of 2 (its own
     axle-divisor math only — this plugin has no FMU access, so it cannot
     set native_vehicle_fmu's own six_wheel structural flag; that lives on
     PC2's chrono_split_dynamics_node as its own six_wheel ROS2 parameter,
     which must be set to match). Default (param absent, as in
-    chrono_vehicle_remote.urdf) keeps every existing 4-wheel/2-axle
+    chrono_vehicle_supervisory.urdf) keeps every existing 4-wheel/2-axle
     behavior bit-exact — purely additive.
 
     Geometry matches chrono_vehicle_6x6.urdf exactly (see its own comment
@@ -257,7 +257,7 @@
 
   <ros2_control name="ChronoVehicleSystem" type="system">
     <hardware>
-      <plugin>chrono_remote_fmu_hw_interface/ChronoRemoteFmuSystemInterface</plugin>
+      <plugin>chrono_supervisory_fmu_hw_interface/ChronoSupervisoryFmuSystemInterface</plugin>
       <param name="six_wheel">true</param>
     </hardware>
 

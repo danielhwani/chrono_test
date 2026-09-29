@@ -1,19 +1,20 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>chrono_remote_fmu_hw_interface</name>
+  <name>chrono_supervisory_fmu_hw_interface</name>
   <version>0.1.0</version>
   <description>
     hardware_interface::SystemInterface plugin for the 분산 버전 (distributed
-    version): ros2_control + this plugin run on PC1 (with the supervisory
-    controller), the FMU dynamics run on a separate PC2
-    (chrono_split_dynamics_node, reused unchanged). ONE bridge --
+    version): runs alongside ros2_control and the supervisory controller
+    (the machine/process hosting the autonomy stack -- "PC1" in the
+    2-machine framing), while the FMU dynamics run on a separate machine
+    ("PC2", chrono_split_dynamics_node, reused unchanged). ONE bridge --
     chrono_split_msgs VehicleCommand/VehicleStatus (Bridge 2's protocol,
     deg/N*m) -- not two: this plugin owns the velocity->torque control
     logic itself (ported from chrono_ros2_control's ChronoFmuSystemInterface)
     instead of delegating it to a middle "virtual ECU" node, since there is
-    no real-ECU/CAN boundary to mirror here, only a PC1/PC2 network
-    boundary. See ../../README.md.
+    no real-ECU/CAN boundary to mirror here, only a network boundary
+    between the supervisory controller and the physics. See ../../README.md.
   </description>
   <maintainer email="danielhwani@gmail.com">daniel</maintainer>
   <license>MIT</license>

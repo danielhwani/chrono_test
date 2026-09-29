@@ -1017,10 +1017,10 @@ ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_con
 
 스플릿 버전(브릿지 2개, 가상 ECU 경유)에 대해 사용자가 "좀 자연스럽지 않은 느낌 — 중간에 ECU를 넣는 건 실제 ECU를 고려한 것 같은데, ros2_control을 쓴다면 가상 ECU로 봐야 할 것 같다"고 지적. 맞는 지적이었음 — `chrono_split_ecu`는 애초에 코드 주석에도 "가상 ECU"라고 명시돼 있었고, 브릿지 2개짜리 구조는 처음부터 **미래에 진짜 ECU/CAN이 생겼을 때를 대비한 경계선**이 목적이었지 지금 당장의 이득을 위한 게 아니었음. 논의 끝에 사용자가 새 요구사항 제시: "`ros2_control`이 상위제어기와 함께 PC1에, FMU는 PC2에 있고, 브릿지는 하나인 버전"을 하나 더 만들자 — 즉 가상 ECU 없이, PC1/PC2라는 물리적 분리 자체만 반영하는 버전.
 
-**이름/접두사(사용자 확정)**: 트랙 이름 "분산 버전"(distributed), 패키지 접두사 `chrono_remote_`.
+**이름/접두사(사용자 확정)**: 트랙 이름 "분산 버전"(distributed), 패키지 접두사 처음엔 `chrono_remote_`로 정했다가, 실제 라이브 검증까지 다 마친 뒤 사용자가 "이전 스플릿 버전과 혼동되지 않게 PC1 쪽 이름을 바꾸자"고 재요청 — "PC1"보다 "상위제어기" 느낌이 이해하기 쉽다는 의견에 따라 최종적으로 `chrono_supervisory_fmu_hw_interface`(클래스 `ChronoSupervisoryFmuSystemInterface`)로 리네임함(패키지 디렉토리/소스/런치/URDF 전부, `git mv`로). 코드 로직은 전혀 안 바뀌고 이름만 바뀐 것 — 리네임 후 재빌드+재검증(pluginlib 로딩, launch) 다시 통과.
 
 **구조**: 기존 두 트랙의 조합—
-- **PC1**: `chrono_ros2_control`의 제어 로직(조향 pass-through, P루프+데드밴드+클램프, 4WD/6x6 "복제 대신 분배" 축 토크 계산, `dead_reckoned_position`)을 그대로 옮겨오되, `fmu_client`를 직접 부르지 않고 `chrono_split_ecu_bridge_hw_interface`처럼 자체 ROS2 노드를 백그라운드 스레드로 띄워서 **Bridge 2의 프로토콜(`VehicleCommand`/`VehicleStatus`, deg/N·m)을 직접** 주고받는 새 플러그인 `ChronoRemoteFmuSystemInterface`(새 패키지 `chrono_remote_fmu_hw_interface`).
+- **PC1**: `chrono_ros2_control`의 제어 로직(조향 pass-through, P루프+데드밴드+클램프, 4WD/6x6 "복제 대신 분배" 축 토크 계산, `dead_reckoned_position`)을 그대로 옮겨오되, `fmu_client`를 직접 부르지 않고 `chrono_split_ecu_bridge_hw_interface`처럼 자체 ROS2 노드를 백그라운드 스레드로 띄워서 **Bridge 2의 프로토콜(`VehicleCommand`/`VehicleStatus`, deg/N·m)을 직접** 주고받는 새 플러그인 `ChronoSupervisoryFmuSystemInterface`(새 패키지 `chrono_supervisory_fmu_hw_interface`).
 - **PC2**: `chrono_split_dynamics_node`를 **코드 변경 전혀 없이 그대로 재사용** — 원래부터 제어 로직이 전혀 없는 순수 범용 FMU 래퍼로 설계돼 있어서 정확히 맞아떨어짐(스플릿 버전 설계 당시 "완전 범용 래퍼"로 만들어둔 게 여기서도 그대로 이득을 봄).
 
 `six_wheel`은 이 플러그인 자신의 축 분배 수학(2 vs 3 나누기)에만 쓰이고, FMU의 구조적 `six_wheel` 플래그는 이 플러그인이 FMU에 접근하지 않으므로 설정할 수 없음 — PC2의 `chrono_split_dynamics_node`가 자기 자신의 `six_wheel` ROS2 파라미터로 **따로, 일치하게** 설정해줘야 함(안 맞으면 아래에서 겪은 것과 비슷한 혼란이 생김).
@@ -1029,7 +1029,7 @@ ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_con
 
 **빌드 중 겪은 환경 문제(코드 무관)**: 새 패키지 첫 `colcon build`에서 `ModuleNotFoundError: No module named 'catkin_pkg'` — conda 환경의 `python3`엔 `catkin_pkg`가 없는데, 기존 5개 패키지는 예전에(아마 conda 비활성 상태에서) 이미 cmake 설정이 캐시돼 있어서 이 문제를 안 겪었을 뿐, **새 패키지를 추가할 때마다 재발할 수 있는 환경 문제**. `PATH`에서 conda 경로를 빼서(`/usr/bin/python3`가 `catkin_pkg` 보유) 빌드하면 해결. 앞으로 이 저장소에 새 ros2_control 패키지를 추가할 때 미리 알아두면 좋음.
 
-**검증(라이브, PC1+PC2를 로컬에서 별도 프로세스로)**: 4륜 직진(`linear.x=1.0, angular.z=0.0`) — 6초 후 `3.176 rad/s`로 정상 수렴(목표 `1.0/0.32≈3.125`와 일치). 6x6은 처음에 `65.36 rad/s`까지 치솟는 런어웨이가 나서 놀랐는데, 원인 추적 결과 **제 테스트 실수**였음 — 4륜 테스트용 PC2 프로세스를 완전히 안 죽이고 6x6용 PC2를 또 띄워서 `/vehicle_command`·`/vehicle_status`에 두 개의 독립된 FMU 시뮬레이션이 동시에 붙어 있었음(`ros2 node list`가 "share an exact name" 경고로 알려줌, `ros2 param get`으로 `six_wheel=False`인 걸 확인하고 원인 확정). 프로세스를 PID로 명시적으로 전부 죽이고 `ros2 daemon stop/start`로 DDS 캐시까지 정리한 뒤 재검증하니 `six_wheel=True` 정상 확인, 속도도 `3.024 rad/s`로 정상 수렴 — **`ChronoRemoteFmuSystemInterface` 자체엔 버그 없었음**. idle(무명령) 5초도 `0.04-0.11 rad/s` 범위에서 안정, 런어웨이 없음.
+**검증(라이브, PC1+PC2를 로컬에서 별도 프로세스로)**: 4륜 직진(`linear.x=1.0, angular.z=0.0`) — 6초 후 `3.176 rad/s`로 정상 수렴(목표 `1.0/0.32≈3.125`와 일치). 6x6은 처음에 `65.36 rad/s`까지 치솟는 런어웨이가 나서 놀랐는데, 원인 추적 결과 **제 테스트 실수**였음 — 4륜 테스트용 PC2 프로세스를 완전히 안 죽이고 6x6용 PC2를 또 띄워서 `/vehicle_command`·`/vehicle_status`에 두 개의 독립된 FMU 시뮬레이션이 동시에 붙어 있었음(`ros2 node list`가 "share an exact name" 경고로 알려줌, `ros2 param get`으로 `six_wheel=False`인 걸 확인하고 원인 확정). 프로세스를 PID로 명시적으로 전부 죽이고 `ros2 daemon stop/start`로 DDS 캐시까지 정리한 뒤 재검증하니 `six_wheel=True` 정상 확인, 속도도 `3.024 rad/s`로 정상 수렴 — **`ChronoSupervisoryFmuSystemInterface` 자체엔 버그 없었음**. idle(무명령) 5초도 `0.04-0.11 rad/s` 범위에서 안정, 런어웨이 없음.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 
