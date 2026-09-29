@@ -1089,6 +1089,30 @@ ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_con
 
 **회전 동작 검증(4륜 분산 버전)**: 여태까지 분산 버전 테스트는 전부 `angular.z=0.0`(직진)만 썼음 — 6x6 급회전 특성을 분리해서 보려고 의도적으로 그랬던 것. 이번엔 `linear.x=1.0, angular.z=0.3`으로 실제 회전을 확인: 조향 `FL=0.567`/`FR=0.789` rad — 인프로세스/스플릿에서 같은 명령으로 본 값과 완전히 동일(4c의 FL/FR 독립 조향이 분산 버전에서도 정상). 속도는 8초에 걸쳐 `2.27→2.82→2.98→2.97→2.96→2.96→3.01→3.03 rad/s`로 진동 없이 매끄럽게 수렴 — 직진 목표치(~3.1 rad/s)보다 살짝 낮은 건 회전 저항 때문으로, 정상 범위(4륜이라 6x6 급회전 때 봤던 심한 감속은 없음).
 
+### 진짜 중요한 발견: `front_wheels_names`/`rear_wheels_names`의 좌우 순서가 계속 뒤바뀌어 있었음
+
+사용자의 질문("애커만 회전시 각 바퀴의 각도는 정확히 계산된 거 맞니?")에 답하려고 직접 애커먼 기하 공식으로 기대값을 계산해봄:
+
+```
+R = linear.x / angular.z,  δ_inner = atan(L/(R-W/2)),  δ_outer = atan(L/(R+W/2))
+```
+
+6x6 조건(`linear.x=1.0, angular.z=0.3, L=3.4, W=1.5`)으로 계산하면 `δ_inner=0.921050 rad`(52.77°), `δ_outer=0.694337 rad`(39.78°) — 그런데 실측값(`front_right_steering_joint=0.921050`, `front_left_steering_joint=0.694337`)과 **각도 자체는 소수점까지 정확히 일치**하는데, **왼쪽 회전인데 오른쪽 조인트가 inner(큰) 값을 받고 있었음** — 좌우가 뒤바뀜.
+
+**실제 `ros2_controllers`(humble) 소스로 원인 확정**: `steering_odometry.cpp`의 `get_commands()`가 `steering_commands = {alpha_r, alpha_l}`(오른쪽 먼저!)를 반환하고, `steering_controllers_library.cpp`는 이걸 `command_interfaces_[i + rear_count] = steering_commands[i]`로 **이름이 아니라 순수 인덱스**로 매핑함 — 즉 사용자가 `front_wheels_names`에 선언한 **첫 번째 항목이 무조건 오른쪽 값을 받게** 설계되어 있음(공식 문서엔 이 순서가 명시돼 있지 않음). `ros2_controllers`의 공식 테스트 픽스처(`ackermann_steering_controller/test/test_ackermann_steering_controller.hpp`)를 확인해서 확정: `rear_wheels_names_ = {"rear_right_wheel_joint", "rear_left_wheel_joint"}`, `front_wheels_names_ = {"front_right_steering_joint", "front_left_steering_joint"}` — **오른쪽이 먼저**가 정답.
+
+그런데 우리 설정(`chrono_vehicle_controllers.yaml`/`_6x6.yaml`, 세 트랙이 전부 공유)은 처음부터 **왼쪽을 먼저** 선언해놨었음:
+```yaml
+front_wheels_names: ["front_left_steering_joint", "front_right_steering_joint"]  # 틀림
+rear_wheels_names: ["rear_left_wheel_joint", "rear_right_wheel_joint"]           # 틀림
+```
+
+**영향 범위**: 조향(steering)은 실질적으로 스왑됨 — 우리 플러그인이 조인트 **이름**으로 FMU의 `steer_fl_deg_in`/`steer_fr_deg_in`에 직접 꽂아주기 때문에, 왼쪽 바퀴가 계속 오른쪽 각도로(반대도 마찬가지) 꺾이고 있었음 — 4c(독립 FL/FR 조향)를 넣은 그 순간부터 지금까지 계속. 트랙션(rear)은 포지션상 똑같이 스왑되지만, 우리 코드가 좌우를 평균내서 쓰기 때문에 실질적 영향 없음. 이전에 "인프로세스/스플릿/분산이 FL/FR 값까지 동일하다"고 확인했던 것들은 사실 **세 트랙이 똑같은 버그를 똑같이 재현**하고 있었던 것 — 값 자체가 옳았던 게 아님.
+
+**수정**: 두 YAML 파일 다 순서만 오른쪽 먼저로 교체(`git mv` 아님, 순수 배열 순서 변경). 재빌드 불필요(런타임 YAML). 인프로세스/분산 둘 다 라이브 재검증: `front_right_steering_joint=0.694337`(outer), `front_left_steering_joint=0.921050`(inner) — 이제 정확함. 스플릿도 같은 설정 파일을 쓰므로 자동 적용(개별 확인은 안 했지만 인프로세스/분산이 공유 파일로 확인됐으니 충분).
+
+**급회전 진동에 대한 영향은?**: 수정 후 같은 6x6 급회전을 다시 20초 관찰해보니 — 여전히 초반 트랜지언트(`0.09~0.57`) 후 `t=6초`부터 `0.005~0.05`로 감쇠(이전 필터만 적용했을 때의 `0.05~0.31→0.005~0.09`와 거의 동일한 패턴, 오히려 살짝 더 깔끔해짐 정도). 즉 **이 좌우 스왑 버그는 실제 버그였고 조향 기하학적으로 중요하지만, 앞서 몇 커밋에 걸쳐 조사했던 급회전 진동의 주원인은 아니었던 것으로 보임** — 그건 필터로 이미 해결된 별개의 폐루프 피드백 문제. `chrono_fmu_system_interface_check` 벤치 하니스는 `ackermann_steering_controller`를 안 쓰므로 이 수정과 무관(회귀값 그대로 `3.635898`/`2.656015`).
+
 ### VehicleCommand/VehicleStatus 메시지 주석 정리
 
 분산 버전의 메시지 구조를 다시 살펴보다가, `VehicleCommand.msg`/`VehicleStatus.msg`의 주석이 아직 "Bridge 2 (ECU -> ...)", "the ECU is responsible for..."처럼 **스플릿 버전 전용이던 시절 그대로** 남아있는 걸 발견 — 필드 구조 자체는 항상 트랙 중립적이었지만(둘 다 deg/N·m, 축 레벨), 프로즈가 분산 버전(ECU 노드 자체가 없음)을 반영 못 하고 있었음. 두 트랙의 송신/수신 주체를 명시하도록 주석만 재작성(필드/로직 변경 없음).

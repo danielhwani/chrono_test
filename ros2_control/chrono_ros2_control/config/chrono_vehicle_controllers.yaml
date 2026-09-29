@@ -45,8 +45,20 @@ controller_manager:
 ackermann_steering_controller:
   ros__parameters:
     front_steering: true
-    front_wheels_names: ["front_left_steering_joint", "front_right_steering_joint"]
-    rear_wheels_names: ["rear_left_wheel_joint", "rear_right_wheel_joint"]
+    # RIGHT first, then LEFT -- matches steering_odometry.cpp's own
+    # get_commands() return order ({alpha_r, alpha_l} / {Wr, Wl}), which
+    # steering_controllers_library.cpp maps straight into
+    # front_wheels_names[i]/rear_wheels_names[i] by index, not by name.
+    # Confirmed against ros2_controllers' own official test fixture
+    # (ackermann_steering_controller/test/test_ackermann_steering_controller.hpp),
+    # which declares its own wheel names in this same right-then-left
+    # order. Declaring left-first here (the original mistake) meant
+    # front_left_steering_joint silently received the RIGHT wheel's
+    # computed angle and vice versa -- steering-side only (rear traction
+    # is unaffected since ChronoFmuSystemInterface averages both rear
+    # commands together anyway, discarding L/R).
+    front_wheels_names: ["front_right_steering_joint", "front_left_steering_joint"]
+    rear_wheels_names: ["rear_right_wheel_joint", "rear_left_wheel_joint"]
 
     # matches WHEELBASE/TRACK/WHEEL_RADIUS in
     # fmu/cpp/native_vehicle_fmu/sources/vehicle_native.cpp and

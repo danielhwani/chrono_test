@@ -27,8 +27,12 @@ controller_manager:
 ackermann_steering_controller:
   ros__parameters:
     front_steering: true
-    front_wheels_names: ["front_left_steering_joint", "front_right_steering_joint"]
-    rear_wheels_names: ["rear_left_wheel_joint", "rear_right_wheel_joint"]
+    # RIGHT first, then LEFT -- see chrono_vehicle_controllers.yaml's
+    # matching comment for the full story (confirmed against
+    # steering_odometry.cpp's get_commands() and ros2_controllers' own
+    # official test fixture, which uses this same order).
+    front_wheels_names: ["front_right_steering_joint", "front_left_steering_joint"]
+    rear_wheels_names: ["rear_right_wheel_joint", "rear_left_wheel_joint"]
 
     # matches WHEELBASE_6W/TRACK/WHEEL_RADIUS in
     # fmu/cpp/native_vehicle_fmu/sources/vehicle_native.cpp -- not arbitrary
