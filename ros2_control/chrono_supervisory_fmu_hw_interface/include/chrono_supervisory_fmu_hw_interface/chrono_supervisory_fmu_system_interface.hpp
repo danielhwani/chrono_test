@@ -1,17 +1,17 @@
 // 분산 버전 (distributed version): runs on the supervisory-controller
 // machine, alongside ros2_control and whatever autonomy stack sits on
 // top -- the "PC1" role in this track's 2-machine framing. The FMU
-// dynamics run on a separate machine ("PC2") -- chrono_split_dynamics_node,
+// dynamics run on a separate machine ("PC2") -- chrono_fmu_dynamics_node,
 // reused completely unchanged (it was already a generic,
 // control-logic-free FMU wrapper, exactly what that role needs). ONE
 // bridge, not two: chrono_split_msgs VehicleCommand/VehicleStatus (the
 // same Bridge 2 protocol/units the split-version's
-// chrono_split_ecu<->chrono_split_dynamics_node link already uses -- deg,
+// chrono_split_ecu<->chrono_fmu_dynamics_node link already uses -- deg,
 // N*m, axle-level).
 //
 // Why no middle "virtual ECU" node here, unlike 스플릿 버전
 // (chrono_split_ecu_bridge_hw_interface + chrono_split_ecu +
-// chrono_split_dynamics_node, 2 bridges/3 processes): that design
+// chrono_fmu_dynamics_node, 2 bridges/3 processes): that design
 // deliberately mirrors a real vehicle's CAN-connected ECU boundary, which
 // only pays off once/if a real ECU could someday replace chrono_split_ecu.
 // This track has no such hardware boundary to mirror -- only a network
@@ -30,7 +30,7 @@
 // six_wheel_ here is READ ONLY for this plugin's own axle-divisor math
 // (num_driven_axles in write()) -- it does NOT set the FMU's structural
 // six_wheel flag (this plugin has no FMU access at all). That flag is
-// the dynamics machine's own chrono_split_dynamics_node's concern, set
+// the dynamics machine's own chrono_fmu_dynamics_node's concern, set
 // via ITS OWN six_wheel ROS2 node parameter when launched there -- the
 // two sides must be configured to agree (both six_wheel or both not),
 // same requirement as matching URDF/dynamics-node six_wheel settings

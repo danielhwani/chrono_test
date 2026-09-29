@@ -7,7 +7,7 @@
 // (VehicleCommand/VehicleStatus) uses the FMU's native units (deg, N*m).
 // This node owns that conversion -- NOT chrono_split_ecu_bridge_hw_interface
 // (a thin translation layer with zero FMU-specific knowledge) and NOT
-// chrono_split_dynamics_node (a thin fmu_client wrapper with zero
+// chrono_fmu_dynamics_node (a thin fmu_client wrapper with zero
 // control-loop knowledge).
 //
 // Control logic ported verbatim from chrono_ros2_control's

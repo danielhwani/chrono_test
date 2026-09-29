@@ -9,7 +9,7 @@
     traction P-loop's torque across 3 axles instead of 2 (its own
     axle-divisor math only — this plugin has no FMU access, so it cannot
     set native_vehicle_fmu's own six_wheel structural flag; that lives on
-    PC2's chrono_split_dynamics_node as its own six_wheel ROS2 parameter,
+    PC2's chrono_fmu_dynamics_node as its own six_wheel ROS2 parameter,
     which must be set to match). Default (param absent, as in
     chrono_vehicle_supervisory.urdf) keeps every existing 4-wheel/2-axle
     behavior bit-exact — purely additive.

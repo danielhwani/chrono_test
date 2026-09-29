@@ -7,7 +7,7 @@
     (it has zero FMU-specific knowledge, so needs no six_wheel <param> at
     all — unlike the in-process version's chrono_vehicle_6x6.urdf). The
     six_wheel flag for this track instead lives as a ROS2 node parameter
-    on chrono_split_ecu/chrono_split_dynamics_node, set via the split
+    on chrono_split_ecu/chrono_fmu_dynamics_node, set via the split
     launch file's six_wheel launch argument.
 
     Geometry matches chrono_vehicle_6x6.urdf exactly (see its own comment

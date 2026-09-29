@@ -6,7 +6,7 @@ up all 5 processes of the split architecture together:
 
     controller_manager (ChronoEcuBridgeSystemInterface, Bridge 1 side)
       <-> chrono_split_ecu (P-loop/deadband/unit conversion)
-      <-> chrono_split_dynamics_node (fmu_client, Bridge 2 side)
+      <-> chrono_fmu_dynamics_node (fmu_client, Bridge 2 side)
 
 plus robot_state_publisher and the same joint_state_broadcaster/
 ackermann_steering_controller spawners the in-process version uses.
@@ -22,7 +22,7 @@ name): when "true",
     can't just be reused as-is)
   - passes six_wheel:=true as a ROS2 node parameter to BOTH chrono_split_ecu
     (drives its divide-by-3-axles torque fan-out) and
-    chrono_split_dynamics_node (drives the FMU's own structural six_wheel
+    chrono_fmu_dynamics_node (drives the FMU's own structural six_wheel
     flag via fmu_client_open_begin()/_finish()) -- unlike the in-process
     version, which only needs the one URDF <param>, this track has no
     single file both processes share, so the same launch-time value has to
@@ -91,8 +91,8 @@ def launch_setup(context, *args, **kwargs):
         parameters=[{"six_wheel": six_wheel}],
     )
     dynamics_node = Node(
-        package="chrono_split_dynamics_node",
-        executable="chrono_split_dynamics_node",
+        package="chrono_fmu_dynamics_node",
+        executable="chrono_fmu_dynamics_node",
         output="both",
         parameters=[{"fmu_dir": FMU_DIR, "six_wheel": six_wheel}],
     )

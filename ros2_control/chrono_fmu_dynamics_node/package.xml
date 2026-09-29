@@ -1,14 +1,16 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>chrono_split_dynamics_node</name>
+  <name>chrono_fmu_dynamics_node</name>
   <version>0.1.0</version>
   <description>
-    FMU-wrapped dynamics node for the split ros2_control / ECU /
-    FMU-dynamics architecture: subscribes VehicleCommand (from
-    chrono_split_ecu, Bridge 2), publishes VehicleStatus. Wraps fmu_client
+    Generic FMU-wrapped dynamics node, shared by both the split (스플릿
+    버전) and distributed (분산 버전) ros2_control tracks: subscribes
+    Bridge 2's VehicleCommand, publishes VehicleStatus, wraps fmu_client
     the same way ChronoFmuSystemInterface does, just as a plain node
-    instead of a hardware_interface plugin -- see ../../README.md.
+    instead of a hardware_interface plugin. No control logic and no
+    knowledge of which track's upstream node/plugin is talking to it --
+    see ../../README.md.
   </description>
   <maintainer email="danielhwani@gmail.com">daniel</maintainer>
   <license>MIT</license>

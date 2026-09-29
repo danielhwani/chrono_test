@@ -9,7 +9,7 @@
     instead of chrono_ros2_control/ChronoFmuSystemInterface. No fmu_dir
     <param> here — that plugin has zero FMU-specific knowledge by design
     (see its own header comment); fmu_dir instead lives as a ROS2 node
-    parameter on chrono_split_dynamics_node (the process that actually
+    parameter on chrono_fmu_dynamics_node (the process that actually
     knows about the FMU), set via the split launch file.
 
     chrono_vehicle.urdf itself is untouched — kept as a separate sibling

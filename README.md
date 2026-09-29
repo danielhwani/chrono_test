@@ -889,12 +889,12 @@ if (std::abs(vel_error) >= kVelocityDeadband) {
 
 1. `chrono_split_msgs` — 위 4개 메시지 정의 (`rosidl_generate_interfaces`)
 2. `chrono_split_ecu` — 가상 ECU 노드. 지금은 배선만 검증(빌드/실행/토픽 왕복 확인)하고 실제 로직(4b의 P 제어기+데드밴드, 4c의 단위 변환)은 의도적으로 TODO로 남겨둠 — "먼저 배선, 그다음 로직"이라는 이 프로젝트의 기존 패턴 그대로.
-3. `chrono_split_dynamics_node` — FMU 감싼 동역학 노드. `fmu_client` 연동도 마찬가지로 TODO(지금 `chrono_fmu_system_interface.cpp`가 하는 걸 그대로 옮겨올 자리만 마련).
+3. `chrono_fmu_dynamics_node` — FMU 감싼 동역학 노드. `fmu_client` 연동도 마찬가지로 TODO(지금 `chrono_fmu_system_interface.cpp`가 하는 걸 그대로 옮겨올 자리만 마련).
 4. `chrono_split_ecu_bridge_hw_interface` — `ros2_control`용 새 `SystemInterface` 플러그인(`ChronoEcuBridgeSystemInterface`). 이건 예외적으로 **실제로 완성**해서 넣음 — 이 클래스의 역할 자체가 순수 번역(필드 매핑)이라 나중에 채울 "더 어려운 로직"이 따로 없기 때문. `hardware_interface::SystemInterface`가 Humble에는 내장 ROS 노드가 없어서(실제 설치된 헤더로 확인 — `get_node()`/`get_logger()` 없음), 직접 `rclcpp::Node`를 만들고 백그라운드 스레드에서 `spin()`시켜 `EcuStatus` 구독 콜백을 처리하고, `read()`/`write()`는 뮤텍스로 보호된 최신값만 주고받음.
 
 **검증**: 5개 패키지(기존 `chrono_ros2_control` 포함) 전부 `colcon build` 성공. `chrono_fmu_system_interface_check`를 재실행해서 기존 패키지가 **완전히 그대로**(수치 동일) 동작함을 재확인. 새 노드 둘을 따로 띄우고 `ros2 topic pub`으로 `EcuCommand(steer_fl_rad=0.3, steer_fr_rad=0.2, traction_vel_rad_s=3.0)`을 발행 → `/vehicle_command`에 `steer_fl_deg=0.3, steer_fr_deg=0.2`로 정확히 반영(브릿지 1→2), 동역학 노드의 플레이스홀더 `VehicleStatus`(0/0/0)가 `/ecu_status`까지 되돌아옴(브릿지 2→1) — 3프로세스·2브릿지 배선이 끝까지 연결됨을 확인.
 
-**남은 일**: `chrono_split_ecu`에 실제 P 제어기/데드밴드/단위변환 로직 이식, `chrono_split_dynamics_node`에 실제 `fmu_client` 연동, 그리고 이 셋을 함께 띄우는 launch 파일 — 전부 다음 단계로 남겨둠.
+**남은 일**: `chrono_split_ecu`에 실제 P 제어기/데드밴드/단위변환 로직 이식, `chrono_fmu_dynamics_node`에 실제 `fmu_client` 연동, 그리고 이 셋을 함께 띄우는 launch 파일 — 전부 다음 단계로 남겨둠.
 
 ### 스플릿 버전 — 실제 로직 채우고 종단간 검증
 
@@ -902,11 +902,11 @@ if (std::abs(vel_error) >= kVelocityDeadband) {
 
 **`chrono_split_ecu`**: 인프로세스 버전의 `chrono_fmu_system_interface.cpp`(4b/4c)에 있던 로직을 그대로 이식 — 조향은 단위 변환(rad↔deg)만 하는 순수 패스스루(이미 독립 FL/FR이라 평균 낼 필요 없음), 트랙션은 동일한 P 제어기(`kVelocityKp=80.0`)+데드밴드(`kVelocityDeadband=0.1`)+클램프(`kMaxDriveTorqueRear=800.0`) 상수 그대로 재사용. `drive_torque_front_nm`/`drive_torque_mid_nm`은 의도적으로 `0.0` 고정 — 인프로세스 버전도 아직 4WD/6x6 안 켜져 있어서, 이렇게 해야 두 버전이 정확히 같은 조건에서 비교 가능함.
 
-**`chrono_split_dynamics_node`**: `fmu_client_open`/`find_vr`/`set_real`/`do_step`/`get_real` 호출을 `chrono_fmu_system_interface.cpp`의 `on_init`/`write`/`read`와 동일한 패턴으로 그대로 이식. 차이점 하나 — 이 노드는 **범용 FMU 래퍼**로 만들어서 `drive_torque_front`/`_mid`/`_rear` 세 값을 항상 다 흘려보냄(ECU가 지금 앞/중은 0을 보내니 결과적으로 인프로세스와 동일하지만, 나중에 ECU 쪽에서 4WD/6x6을 켜도 이 노드는 손댈 필요 없음). `fmu_dir`은 URDF `<param>` 대신 ROS2 노드 파라미터로 받음(`hardware_interface` 컴포넌트가 아니라 순수 노드라서).
+**`chrono_fmu_dynamics_node`**: `fmu_client_open`/`find_vr`/`set_real`/`do_step`/`get_real` 호출을 `chrono_fmu_system_interface.cpp`의 `on_init`/`write`/`read`와 동일한 패턴으로 그대로 이식. 차이점 하나 — 이 노드는 **범용 FMU 래퍼**로 만들어서 `drive_torque_front`/`_mid`/`_rear` 세 값을 항상 다 흘려보냄(ECU가 지금 앞/중은 0을 보내니 결과적으로 인프로세스와 동일하지만, 나중에 ECU 쪽에서 4WD/6x6을 켜도 이 노드는 손댈 필요 없음). `fmu_dir`은 URDF `<param>` 대신 ROS2 노드 파라미터로 받음(`hardware_interface` 컴포넌트가 아니라 순수 노드라서).
 
 **`chrono_vehicle_split.urdf`** (새 파일, 기존 `chrono_vehicle.urdf`는 그대로 둠): `<ros2_control><hardware><plugin>`만 `chrono_split_ecu_bridge_hw_interface/ChronoEcuBridgeSystemInterface`로 바뀜, `fmu_dir` `<param>` 없음(그 정보가 이제 동역학 노드 쪽 파라미터라서). 나머지 조인트/비주얼은 완전히 동일.
 
-**`chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_control.launch.py`** (새 launch 파일): `chrono_split_dynamics_node` + `chrono_split_ecu` + `controller_manager`(+ `joint_state_broadcaster`/`ackermann_steering_controller` 스포너) + `robot_state_publisher`까지 5개 프로세스를 한 번에 띄움. 컨트롤러 설정 YAML은 인프로세스 버전 것(`chrono_ros2_control/config/chrono_vehicle_controllers.yaml`)을 **그대로 재사용** — 조인트 이름/인터페이스 타입이 완전히 같아서 새로 만들 필요 없었음(`lock_memory: false`도 이미 반영돼 있어서 이번엔 그 문제도 안 겪음).
+**`chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_control.launch.py`** (새 launch 파일): `chrono_fmu_dynamics_node` + `chrono_split_ecu` + `controller_manager`(+ `joint_state_broadcaster`/`ackermann_steering_controller` 스포너) + `robot_state_publisher`까지 5개 프로세스를 한 번에 띄움. 컨트롤러 설정 YAML은 인프로세스 버전 것(`chrono_ros2_control/config/chrono_vehicle_controllers.yaml`)을 **그대로 재사용** — 조인트 이름/인터페이스 타입이 완전히 같아서 새로 만들 필요 없었음(`lock_memory: false`도 이미 반영돼 있어서 이번엔 그 문제도 안 겪음).
 
 ```bash
 cd ros2_control
@@ -921,7 +921,7 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ros2 launch chrono_split_
 - **정지 상태**: 명령 없이 몇 초 방치 → `velocity=0.0055` rad/s(노이즈 범위 내), 발산 없음 — 데드밴드가 이식된 그대로 잘 작동함
 - **실제 명령**(`linear.x=1.0, angular.z=0.3`, 인프로세스 검증 때와 동일한 시나리오): 조향각 `0.567`/`0.789` rad — **인프로세스 버전과 완전히 동일**(같은 컨트롤러 설정이니 당연하지만, 독립 조향 경로가 브릿지를 통과해도 안 깨진다는 증거). 뒷바퀴 속도는 `2.9 → 2.9 → 2.36 → 2.32` rad/s로 안정적으로 수렴 — 인프로세스 버전의 `2.86 → 2.75 → 2.05 → 2.02 → 2.09`와 정확히 같은 수치는 아니지만(브릿지 두 단계를 거치는 타이밍 차이가 있으니 당연함), **같은 질적 동작**(진동/붕괴 없이 비슷한 범위로 수렴)을 보임 — 스플릿 버전의 제어 로직이 실제로 올바르게 작동한다는 확인.
 
-**알려진 한계 — 토픽 기반이라 인프로세스와 달리 사이클 락스텝이 깨짐 (의도적으로 지금은 안 고침, 기록만 해둠)**: 인프로세스 버전은 `controller_manager` 사이클 하나 = `write()` 호출 하나 = FMU `do_step()` 하나로 완전히 동기적/결정적이지만, 스플릿 버전은 `chrono_split_ecu`와 `chrono_split_dynamics_node`가 각자 독립된 OS 타이머(500Hz)로 도는 구조라 다음과 같은 현상이 생길 수 있음:
+**알려진 한계 — 토픽 기반이라 인프로세스와 달리 사이클 락스텝이 깨짐 (의도적으로 지금은 안 고침, 기록만 해둠)**: 인프로세스 버전은 `controller_manager` 사이클 하나 = `write()` 호출 하나 = FMU `do_step()` 하나로 완전히 동기적/결정적이지만, 스플릿 버전은 `chrono_split_ecu`와 `chrono_fmu_dynamics_node`가 각자 독립된 OS 타이머(500Hz)로 도는 구조라 다음과 같은 현상이 생길 수 있음:
 
 - **중복 적용**: 두 노드의 타이머 위상이 안 맞으면, 동역학 노드가 "새로 받은 값인지" 확인 없이 `latest_vehicle_command_`를 매 틱마다 그냥 읽어서 스텝하기 때문에 같은 명령값으로 물리 스텝이 두 번 이상 진행될 수 있음
 - **건너뜀**: 반대로 ECU가 더 빠르게 새 값을 발행하면, 동역학 노드가 미처 못 읽은 중간 값이 덮어써져서 그 사이클의 명령이 물리에 한 번도 반영 안 되고 사라질 수 있음
@@ -937,7 +937,7 @@ LD_PRELOAD=~/miniconda3/envs/chrono/lib/libstdc++.so.6 ros2 launch chrono_split_
 
 **발견한 버그 1 — `fmu_client_open()`은 구조적 파라미터를 설정할 방법이 없었음**: `four_wheel_drive`를 `on_init()`에서 `fmu_client_open()` 호출 직후 `SetReal`로 켰는데, 벤치 테스트 결과가 **2WD 때와 소수점까지 완전히 동일**하게 나옴 — 즉 4WD가 전혀 적용이 안 되고 있었음. 원인을 파보니, FMU(`vehicle_native.cpp`)에서 `four_wheel_drive_in`은 `build()` 안에서 **딱 한 번**만 읽혀서 앞바퀴 구동 모터를 만들지 결정하는데, `build()`는 `fmi2ExitInitializationMode` 콜백 안에서 실행됨. 그런데 `fmu_client_open()`은 `SetupExperiment→EnterInitializationMode→ExitInitializationMode`를 **연달아 한 번에** 실행하고 반환해서, 호출자가 그 사이에 `SetReal`을 끼워넣을 방법이 아예 없었음 — `on_init()`이 `open()`에서 돌아온 뒤 아무리 `SetReal`을 불러도 이미 `build()`가 끝난 뒤라 늦음.
 
-**수정**: `fmu_client_open()`을 `fmu_client_open_begin()`(`EnterInitializationMode`까지) + `fmu_client_open_finish()`(`ExitInitializationMode`)로 2단계 API로 분리. 기존 `fmu_client_open()`은 이 둘을 그대로 이어붙인 편의 함수로 남겨서 `fmu_driver`/`fmu_client_cpp_check`(구조적 파라미터를 안 쓰는 기존 호출자)는 전혀 안 건드림 — 재빌드 후 두 프로그램 다 기존 검증값과 소수점까지 동일하게 재현됨(`chassis_x=6.189703`/`speed_mps=4.122292` 등). `ChronoFmuSystemInterface::on_init()`과 `chrono_split_dynamics_node`의 생성자 둘 다 `open_begin()` → VR 조회 → `four_wheel_drive`/`independent_front_steer` `SetReal` → `open_finish()` 순서로 수정. 이 순서로 하니 인프로세스 버전 벤치 테스트에서 `3.757383`(2WD) → `4.319235`(4WD, 진짜로 다른 값)로 수치가 명확히 달라짐 — 4WD가 비로소 실제로 적용됨을 확인.
+**수정**: `fmu_client_open()`을 `fmu_client_open_begin()`(`EnterInitializationMode`까지) + `fmu_client_open_finish()`(`ExitInitializationMode`)로 2단계 API로 분리. 기존 `fmu_client_open()`은 이 둘을 그대로 이어붙인 편의 함수로 남겨서 `fmu_driver`/`fmu_client_cpp_check`(구조적 파라미터를 안 쓰는 기존 호출자)는 전혀 안 건드림 — 재빌드 후 두 프로그램 다 기존 검증값과 소수점까지 동일하게 재현됨(`chassis_x=6.189703`/`speed_mps=4.122292` 등). `ChronoFmuSystemInterface::on_init()`과 `chrono_fmu_dynamics_node`의 생성자 둘 다 `open_begin()` → VR 조회 → `four_wheel_drive`/`independent_front_steer` `SetReal` → `open_finish()` 순서로 수정. 이 순서로 하니 인프로세스 버전 벤치 테스트에서 `3.757383`(2WD) → `4.319235`(4WD, 진짜로 다른 값)로 수치가 명확히 달라짐 — 4WD가 비로소 실제로 적용됨을 확인.
 
 **발견한 버그 2 — 같은 토크를 양쪽 축에 복사하면 폭주함**: 4WD를 "P 루프가 계산한 토크값을 앞/뒤 축에 그대로 복사"하는 방식으로 구현했는데, 실제 명령 없이 정지 상태로 몇 초만 둬도 속도가 **180 rad/s대까지 폭주**함. 처음엔 스플릿 버전만의 타이밍 문제(토픽 브릿지 지연/중복 스텝)로 의심했는데, **인프로세스 버전도 똑같이 폭주**하는 걸 확인 — 즉 구조 분리와 무관한, 4WD 로직 자체의 진짜 버그였음.
 
@@ -972,9 +972,9 @@ FMU는 `six_wheel`/`drive_torque_mid`를 이미 지원했지만(ros2_control 작
 
 **구조 파라미터라 `fmu_client_open_begin`/`_finish` 두 단계 패턴 필수**: `six_wheel`은 `four_wheel_drive`와 마찬가지로 `fmi2ExitInitializationMode`(FMU의 `build()`) 안에서 딱 한 번 읽혀서 바디/모터 레이아웃을 영구히 결정하는 값 — 4WD 때 찾은 `fmu_client_open()`의 구조적 파라미터 버그(README의 4WD 섹션 참고)와 똑같은 이유로, `open_begin()`으로 초기화 모드 진입 후 `SetReal`, 그 다음 `open_finish()`로 나가야 함.
 
-**같은 플러그인 바이너리가 4륜/6x6 URDF 둘 다에 쓰이므로 기본값은 반드시 off**: `four_wheel_drive`는 이제 두 트랙 다 무조건 켜지만, `six_wheel`은 껐다 켰다 해야 함 — 강제로 항상 켜면 4륜 URDF의 섀시/휠베이스 기하가 조용히 깨짐. 인프로세스는 URDF의 선택적 `<param name="six_wheel">true</param>`(없으면/"true" 아니면 false)로, 스플릿은 `chrono_split_ecu`/`chrono_split_dynamics_node` 양쪽의 ROS2 노드 파라미터(기본 false)로 껐다 켰다 함.
+**같은 플러그인 바이너리가 4륜/6x6 URDF 둘 다에 쓰이므로 기본값은 반드시 off**: `four_wheel_drive`는 이제 두 트랙 다 무조건 켜지만, `six_wheel`은 껐다 켰다 해야 함 — 강제로 항상 켜면 4륜 URDF의 섀시/휠베이스 기하가 조용히 깨짐. 인프로세스는 URDF의 선택적 `<param name="six_wheel">true</param>`(없으면/"true" 아니면 false)로, 스플릿은 `chrono_split_ecu`/`chrono_fmu_dynamics_node` 양쪽의 ROS2 노드 파라미터(기본 false)로 껐다 켰다 함.
 
-**토크 분배**: 4WD의 "복제 대신 분배" 원칙을 3축으로 일반화 — `total_drive_torque / num_driven_axles`, `num_driven_axles`는 `six_wheel_ ? 3.0 : 2.0`. `chrono_split_dynamics_node`는 처음부터 "완전 범용 FMU 래퍼"로 설계돼 있어서(자체 헤더 코멘트) `drive_torque_mid`를 이미 무조건 전달하고 있었음 — 이번엔 구조적 플래그(`six_wheel` SetReal) 배선만 추가하면 됐음. `chrono_split_ecu_bridge_hw_interface`는 상태 전용 velocity 조인트를 이미 범용적으로 처리하는 순수 필드 매핑 브릿지라 6x6에 코드 변경 전혀 불필요.
+**토크 분배**: 4WD의 "복제 대신 분배" 원칙을 3축으로 일반화 — `total_drive_torque / num_driven_axles`, `num_driven_axles`는 `six_wheel_ ? 3.0 : 2.0`. `chrono_fmu_dynamics_node`는 처음부터 "완전 범용 FMU 래퍼"로 설계돼 있어서(자체 헤더 코멘트) `drive_torque_mid`를 이미 무조건 전달하고 있었음 — 이번엔 구조적 플래그(`six_wheel` SetReal) 배선만 추가하면 됐음. `chrono_split_ecu_bridge_hw_interface`는 상태 전용 velocity 조인트를 이미 범용적으로 처리하는 순수 필드 매핑 브릿지라 6x6에 코드 변경 전혀 불필요.
 
 **차량 상수** (`vehicle_native.cpp`에서 grep으로 확인, 추측 아님): `CHASSIS_MASS_6W=2600.0`, `CHASSIS_DIMS_6W={4.4, 1.8, 0.5}`, `WHEELBASE_6W=3.4`(전축 `+1.7`, 후축 `-1.7`, 중간축 `0.0`), `TRACK=1.5`(4륜과 동일, `±0.75`), `WHEEL_RADIUS=0.32`/`WHEEL_WIDTH=0.22`(동일), `chassis_z=1.19`(레이아웃 무관 동일 공식).
 
@@ -982,7 +982,7 @@ FMU는 `six_wheel`/`drive_torque_mid`를 이미 지원했지만(ros2_control 작
 
 **컨트롤러 YAML도 별도 필요했음** — 처음엔 놓칠 뻔한 부분: `ackermann_steering_controller`는 `wheelbase` 파라미터를 조향각/오도메트리 계산에 직접 사용하는데, 4륜용 YAML의 `wheelbase: 2.6`을 6x6(`3.4`)에 그대로 재사용하면 크래시는 안 나지만 조향 기하가 조용히 틀어짐. `chrono_vehicle_controllers_6x6.yaml`을 새로 만들어 `wheelbase: 3.4`만 다르게 함(track/radius는 공유).
 
-**launch 파일**: 두 트랙 다 `six_wheel` launch argument(기본 `"false"`) 추가, `OpaqueFunction` 패턴으로 런타임 값에 따라 URDF/컨트롤러 YAML을 고름(모듈 레벨 순수 Python은 launch argument 런타임 값을 볼 수 없어서). 스플릿 쪽은 추가로 `six_wheel` 값을 `chrono_split_ecu`/`chrono_split_dynamics_node` 두 노드의 ROS 파라미터로도 전달 — 인프로세스는 URDF 파일 하나만 바꾸면 끝이지만, 스플릿은 두 개의 독립 프로세스에 같은 값을 따로 전달해야 함.
+**launch 파일**: 두 트랙 다 `six_wheel` launch argument(기본 `"false"`) 추가, `OpaqueFunction` 패턴으로 런타임 값에 따라 URDF/컨트롤러 YAML을 고름(모듈 레벨 순수 Python은 launch argument 런타임 값을 볼 수 없어서). 스플릿 쪽은 추가로 `six_wheel` 값을 `chrono_split_ecu`/`chrono_fmu_dynamics_node` 두 노드의 ROS 파라미터로도 전달 — 인프로세스는 URDF 파일 하나만 바꾸면 끝이지만, 스플릿은 두 개의 독립 프로세스에 같은 값을 따로 전달해야 함.
 
 **실터미널 검증, 두 트랙 다**: idle 안정성(러너웨이 없음, 6개 조인트 정상 export) + 실제 명령(`linear.x=1.0, angular.z=0.3`) 응답 확인. 인프로세스/스플릿 둘 다 러너웨이 없이 안정적으로 움직임(초기 6초 스냅샷 기준 인프로세스 `0.351 rad/s`, 스플릿 `0.310 rad/s`) — 단, 이 값들은 아래에서 밝혀졌듯 진짜 정상상태가 아니라 여전히 느리게 움직이던 중간값이었음 (사용자가 본인 터미널에서 더 오래 관찰하며 발견).
 
@@ -1021,15 +1021,17 @@ ros2 launch chrono_split_ecu_bridge_hw_interface/launch/chrono_vehicle_split_con
 
 **구조**: 기존 두 트랙의 조합—
 - **PC1**: `chrono_ros2_control`의 제어 로직(조향 pass-through, P루프+데드밴드+클램프, 4WD/6x6 "복제 대신 분배" 축 토크 계산, `dead_reckoned_position`)을 그대로 옮겨오되, `fmu_client`를 직접 부르지 않고 `chrono_split_ecu_bridge_hw_interface`처럼 자체 ROS2 노드를 백그라운드 스레드로 띄워서 **Bridge 2의 프로토콜(`VehicleCommand`/`VehicleStatus`, deg/N·m)을 직접** 주고받는 새 플러그인 `ChronoSupervisoryFmuSystemInterface`(새 패키지 `chrono_supervisory_fmu_hw_interface`).
-- **PC2**: `chrono_split_dynamics_node`를 **코드 변경 전혀 없이 그대로 재사용** — 원래부터 제어 로직이 전혀 없는 순수 범용 FMU 래퍼로 설계돼 있어서 정확히 맞아떨어짐(스플릿 버전 설계 당시 "완전 범용 래퍼"로 만들어둔 게 여기서도 그대로 이득을 봄).
+- **PC2**: `chrono_fmu_dynamics_node`를 **코드 변경 전혀 없이 그대로 재사용** — 원래부터 제어 로직이 전혀 없는 순수 범용 FMU 래퍼로 설계돼 있어서 정확히 맞아떨어짐(스플릿 버전 설계 당시 "완전 범용 래퍼"로 만들어둔 게 여기서도 그대로 이득을 봄).
 
-`six_wheel`은 이 플러그인 자신의 축 분배 수학(2 vs 3 나누기)에만 쓰이고, FMU의 구조적 `six_wheel` 플래그는 이 플러그인이 FMU에 접근하지 않으므로 설정할 수 없음 — PC2의 `chrono_split_dynamics_node`가 자기 자신의 `six_wheel` ROS2 파라미터로 **따로, 일치하게** 설정해줘야 함(안 맞으면 아래에서 겪은 것과 비슷한 혼란이 생김).
+`six_wheel`은 이 플러그인 자신의 축 분배 수학(2 vs 3 나누기)에만 쓰이고, FMU의 구조적 `six_wheel` 플래그는 이 플러그인이 FMU에 접근하지 않으므로 설정할 수 없음 — PC2의 `chrono_fmu_dynamics_node`가 자기 자신의 `six_wheel` ROS2 파라미터로 **따로, 일치하게** 설정해줘야 함(안 맞으면 아래에서 겪은 것과 비슷한 혼란이 생김).
 
-**launch 구조도 다름**: PC1/PC2가 물리적으로 분리될 걸 전제로 하므로, 기존 스플릿 launch 파일처럼 5개 프로세스를 한 launch에 다 넣지 않고 **PC1 launch 파일만** 만듦(`chrono_vehicle_remote_control.launch.py` — controller_manager+로봇+스포너만). PC2는 `chrono_split_dynamics_node` 노드 하나+파라미터 2개뿐이라 별도 launch 파일 없이 `ros2 run ... --ros-args -p fmu_dir:=... -p six_wheel:=...`로 직접 실행하도록 문서화(로컬 검증 시 같은 컴퓨터에서 각각 별도 터미널로 실행 — 실제 배포에서는 다른 PC에서, 같은 DDS 도메인/네트워크 위에서 그대로 동작).
+**launch 구조도 다름**: PC1/PC2가 물리적으로 분리될 걸 전제로 하므로, 기존 스플릿 launch 파일처럼 5개 프로세스를 한 launch에 다 넣지 않고 **PC1 launch 파일만** 만듦(`chrono_vehicle_supervisory_control.launch.py` — controller_manager+로봇+스포너만). PC2는 `chrono_fmu_dynamics_node` 노드 하나+파라미터 2개뿐이라 별도 launch 파일 없이 `ros2 run ... --ros-args -p fmu_dir:=... -p six_wheel:=...`로 직접 실행하도록 문서화(로컬 검증 시 같은 컴퓨터에서 각각 별도 터미널로 실행 — 실제 배포에서는 다른 PC에서, 같은 DDS 도메인/네트워크 위에서 그대로 동작).
 
 **빌드 중 겪은 환경 문제(코드 무관)**: 새 패키지 첫 `colcon build`에서 `ModuleNotFoundError: No module named 'catkin_pkg'` — conda 환경의 `python3`엔 `catkin_pkg`가 없는데, 기존 5개 패키지는 예전에(아마 conda 비활성 상태에서) 이미 cmake 설정이 캐시돼 있어서 이 문제를 안 겪었을 뿐, **새 패키지를 추가할 때마다 재발할 수 있는 환경 문제**. `PATH`에서 conda 경로를 빼서(`/usr/bin/python3`가 `catkin_pkg` 보유) 빌드하면 해결. 앞으로 이 저장소에 새 ros2_control 패키지를 추가할 때 미리 알아두면 좋음.
 
 **검증(라이브, PC1+PC2를 로컬에서 별도 프로세스로)**: 4륜 직진(`linear.x=1.0, angular.z=0.0`) — 6초 후 `3.176 rad/s`로 정상 수렴(목표 `1.0/0.32≈3.125`와 일치). 6x6은 처음에 `65.36 rad/s`까지 치솟는 런어웨이가 나서 놀랐는데, 원인 추적 결과 **제 테스트 실수**였음 — 4륜 테스트용 PC2 프로세스를 완전히 안 죽이고 6x6용 PC2를 또 띄워서 `/vehicle_command`·`/vehicle_status`에 두 개의 독립된 FMU 시뮬레이션이 동시에 붙어 있었음(`ros2 node list`가 "share an exact name" 경고로 알려줌, `ros2 param get`으로 `six_wheel=False`인 걸 확인하고 원인 확정). 프로세스를 PID로 명시적으로 전부 죽이고 `ros2 daemon stop/start`로 DDS 캐시까지 정리한 뒤 재검증하니 `six_wheel=True` 정상 확인, 속도도 `3.024 rad/s`로 정상 수렴 — **`ChronoSupervisoryFmuSystemInterface` 자체엔 버그 없었음**. idle(무명령) 5초도 `0.04-0.11 rad/s` 범위에서 안정, 런어웨이 없음.
+
+**PC2 쪽 이름도 이어서 리네임**: RViz로 분산 버전이 정상 동작하는 걸 확인한 직후, 사용자가 "`chrono_split_dynamics_node`가 PC1이 아니라 PC2에 해당하는 것 같은데 이름이 적절하지 않은 것 같다"고 짚어서 아키텍처(어느 쪽이 PC1/PC2인지)를 다시 점검 — 배치 자체는 원래부터 맞았음(`ChronoSupervisoryFmuSystemInterface`가 `controller_manager`가 직접 로드하는 PC1 쪽 플러그인, `chrono_fmu_dynamics_node`가 실제 `fmu_client`를 부르는 PC2 쪽 노드), 헷갈린 건 PC2 쪽 노드 이름이 `chrono_split_dynamics_node`로 스플릿 버전 전용처럼 보였던 것. 이제 스플릿/분산 두 트랙이 이 노드를 공유하는 상황이라, 트랙 중립적인 이름으로 다시 리네임: **`chrono_split_dynamics_node` → `chrono_fmu_dynamics_node`**(클래스 `ChronoSplitDynamicsNode` → `ChronoFmuDynamicsNode`), `git mv` + 식별자 전체 치환. 이 노드를 쓰는 양쪽 패키지(`chrono_split_ecu_bridge_hw_interface`의 launch 파일/`package.xml`, `chrono_supervisory_fmu_hw_interface`의 launch 파일/`package.xml`)도 같이 갱신. 재빌드 후 스플릿/분산 두 트랙 다 새 실행 파일명(`ros2 run chrono_fmu_dynamics_node chrono_fmu_dynamics_node ...`)으로 정상 기동 재확인.
 
 ### C++ 페이싱 — sleep_until의 함정과 해결
 

@@ -10,7 +10,7 @@
     ChronoFmuSystemInterface or ChronoEcuBridgeSystemInterface. No
     fmu_dir <param> here (this plugin has no FMU access at all — see its
     own header comment) — fmu_dir instead lives as a ROS2 node parameter
-    on chrono_split_dynamics_node, reused unchanged, meant to run on a
+    on chrono_fmu_dynamics_node, reused unchanged, meant to run on a
     separate PC2.
   -->
 

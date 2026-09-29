@@ -8,7 +8,7 @@
     version): runs alongside ros2_control and the supervisory controller
     (the machine/process hosting the autonomy stack -- "PC1" in the
     2-machine framing), while the FMU dynamics run on a separate machine
-    ("PC2", chrono_split_dynamics_node, reused unchanged). ONE bridge --
+    ("PC2", chrono_fmu_dynamics_node, reused unchanged). ONE bridge --
     chrono_split_msgs VehicleCommand/VehicleStatus (Bridge 2's protocol,
     deg/N*m) -- not two: this plugin owns the velocity->torque control
     logic itself (ported from chrono_ros2_control's ChronoFmuSystemInterface)
@@ -30,7 +30,7 @@
   <exec_depend>ackermann_steering_controller</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
-  <exec_depend>chrono_split_dynamics_node</exec_depend>
+  <exec_depend>chrono_fmu_dynamics_node</exec_depend>
   <exec_depend>ros2launch</exec_depend>
 
   <export>

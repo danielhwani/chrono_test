@@ -1,18 +1,23 @@
-// FMU-wrapped dynamics node in the split architecture: subscribes
-// VehicleCommand (from chrono_split_ecu, Bridge 2), publishes
-// VehicleStatus. Wraps fmu_client exactly the way
-// chrono_ros2_control's chrono_fmu_system_interface.cpp does (same
-// open/find_vr/set_real/do_step/get_real call pattern, same VRs, same
-// step size) -- that file is untouched, this is a plain ROS2 node instead
-// of a hardware_interface plugin.
+// Generic FMU-wrapped dynamics node, shared by BOTH the split (스플릿
+// 버전, chrono_split_ecu upstream) and distributed (분산 버전,
+// chrono_supervisory_fmu_hw_interface upstream) ros2_control tracks --
+// package renamed from chrono_split_dynamics_node once the distributed
+// track started reusing it too, since it was never actually split-track-
+// specific. Subscribes Bridge 2's VehicleCommand, publishes
+// VehicleStatus, wraps fmu_client exactly the way chrono_ros2_control's
+// chrono_fmu_system_interface.cpp does (same open/find_vr/set_real/
+// do_step/get_real call pattern, same VRs, same step size) -- that file
+// is untouched, this is a plain ROS2 node instead of a hardware_interface
+// plugin. No control logic, no knowledge of which track's upstream
+// node/plugin is talking to it -- this is exactly what let it be reused
+// unchanged for the distributed track.
 //
-// Unlike the ECU node, this one forwards all three axle torques
-// (front/mid/rear) unconditionally -- six_wheel stays at the FMU's own
-// default-off value (never set here), so drive_torque_mid is simply
-// ignored by the FMU (no mid drive motor was built). Being a complete,
-// generic FMU wrapper here (rather than only wiring what today's ECU
-// happens to send) keeps this node reusable once six_wheel is wired up on
-// the ECU side -- no changes would be needed here for that.
+// Forwards all three axle torques (front/mid/rear) unconditionally --
+// six_wheel stays at the FMU's own default-off value unless this node's
+// own six_wheel parameter says otherwise. Being a complete, generic FMU
+// wrapper here (rather than only wiring what the upstream side happens to
+// send) is what made this node reusable across two different upstream
+// designs with zero changes.
 //
 // four_wheel_drive=1.0 IS set here (matching chrono_ros2_control's own
 // 4WD upgrade, same session) via fmu_client_open_begin()/_finish() rather
@@ -57,10 +62,10 @@ namespace
 constexpr double kStepSize = 0.002;
 }  // namespace
 
-class ChronoSplitDynamicsNode : public rclcpp::Node
+class ChronoFmuDynamicsNode : public rclcpp::Node
 {
 public:
-  ChronoSplitDynamicsNode() : Node("chrono_split_dynamics_node")
+  ChronoFmuDynamicsNode() : Node("chrono_fmu_dynamics_node")
   {
     const std::string fmu_dir = declare_parameter<std::string>("fmu_dir", "");
     if (fmu_dir.empty()) {
@@ -114,10 +119,10 @@ public:
       create_publisher<VehicleStatus>("vehicle_status", rclcpp::SystemDefaultsQoS());
 
     timer_ = create_wall_timer(
-      std::chrono::milliseconds(2), std::bind(&ChronoSplitDynamicsNode::tick, this));
+      std::chrono::milliseconds(2), std::bind(&ChronoFmuDynamicsNode::tick, this));
   }
 
-  ~ChronoSplitDynamicsNode() override { fmu_client_close(fmu_); }
+  ~ChronoFmuDynamicsNode() override { fmu_client_close(fmu_); }
 
 private:
   bool find_vr_or_throw(const char * name, FmuValueReference * out)
@@ -189,9 +194,9 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   try {
-    rclcpp::spin(std::make_shared<ChronoSplitDynamicsNode>());
+    rclcpp::spin(std::make_shared<ChronoFmuDynamicsNode>());
   } catch (const std::exception & e) {
-    RCLCPP_FATAL(rclcpp::get_logger("chrono_split_dynamics_node"), "%s", e.what());
+    RCLCPP_FATAL(rclcpp::get_logger("chrono_fmu_dynamics_node"), "%s", e.what());
     rclcpp::shutdown();
     return 1;
   }

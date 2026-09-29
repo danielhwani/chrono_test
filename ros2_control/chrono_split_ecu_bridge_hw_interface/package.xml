@@ -24,7 +24,7 @@
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>chrono_split_ecu</exec_depend>
-  <exec_depend>chrono_split_dynamics_node</exec_depend>
+  <exec_depend>chrono_fmu_dynamics_node</exec_depend>
   <exec_depend>ros2launch</exec_depend>
 
   <export>

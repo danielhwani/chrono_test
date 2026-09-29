@@ -6,7 +6,7 @@
 // command_interfaces, subscribe EcuStatus into the exported
 // state_interfaces (chrono_split_msgs, see ../../chrono_split_msgs/).
 // The velocity->torque control loop and FMU access live downstream, in
-// chrono_split_ecu and chrono_split_dynamics_node.
+// chrono_split_ecu and chrono_fmu_dynamics_node.
 //
 // Uses the exact same joint parsing / JointIO pattern as
 // ChronoFmuSystemInterface (same URDF works unchanged -- Bridge 1's units

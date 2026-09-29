@@ -5,13 +5,13 @@ This brings up ros2_control (controller_manager + ChronoSupervisoryFmuSystemInte
 + joint_state_broadcaster + ackermann_steering_controller) and
 robot_state_publisher -- everything that's meant to run on PC1, alongside
 whatever supervisory controller/Nav2 stack eventually sits on top. It does
-NOT bring up the FMU dynamics -- that's chrono_split_dynamics_node,
+NOT bring up the FMU dynamics -- that's chrono_fmu_dynamics_node,
 reused completely unchanged, meant to run as its own separate process on a
 separate PC2 (see the split launch file's use of the same node for what
 that looks like when it IS colocated). Run PC2's side directly, no launch
 file needed for a single node with two parameters:
 
-    ros2 run chrono_split_dynamics_node chrono_split_dynamics_node \\
+    ros2 run chrono_fmu_dynamics_node chrono_fmu_dynamics_node \\
       --ros-args -p fmu_dir:=<path to native_vehicle_fmu on PC2> -p six_wheel:=<true|false>
 
 The two sides find each other over ordinary ROS2/DDS discovery (the
@@ -19,14 +19,14 @@ The two sides find each other over ordinary ROS2/DDS discovery (the
 2-machine setup that means both machines need to be on the same DDS
 domain/network; for local testing on one machine (this repo's own
 verification so far), it works exactly the same way over localhost, no
-different from running the split version's chrono_split_dynamics_node.
+different from running the split version's chrono_fmu_dynamics_node.
 
 `six_wheel` launch argument: same meaning/mechanism as the in-process and
 split launch files' own six_wheel argument -- picks chrono_vehicle_supervisory_6x6.urdf
 and chrono_vehicle_controllers_6x6.yaml instead of the 4-wheel ones. IMPORTANT:
 this only affects THIS plugin's own axle-divisor math (see
 ChronoSupervisoryFmuSystemInterface's header comment) -- it does NOT reach PC2.
-PC2's chrono_split_dynamics_node needs its OWN --six_wheel:=true passed
+PC2's chrono_fmu_dynamics_node needs its OWN --six_wheel:=true passed
 separately when launched there; the two sides must be set to agree.
 
 Run (PC1):
@@ -112,7 +112,7 @@ def generate_launch_description():
             default_value="false",
             description=(
                 "Use chrono_vehicle_supervisory_6x6.urdf instead of chrono_vehicle_supervisory.urdf "
-                "(PC2's chrono_split_dynamics_node needs its own matching six_wheel:=true)"
+                "(PC2's chrono_fmu_dynamics_node needs its own matching six_wheel:=true)"
             ),
         ),
         OpaqueFunction(function=launch_setup),
